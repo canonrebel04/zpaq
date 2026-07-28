@@ -1,0 +1,13 @@
+[package]
+name = "zpaq-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rayon = "1.10"
+crossbeam-channel = "0.5"
+indicatif = "0.17"
+
+[build-dependencies]
+cc = "1.0"
