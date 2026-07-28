@@ -15,7 +15,7 @@ zpaq.o: zpaq.cpp libzpaq.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ -c zpaq.cpp -pthread
 
 zpaq: zpaq.o libzpaq.o
-	$(CXX) $(LDFLAGS) -o $@ zpaq.o libzpaq.o -pthread
+	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ zpaq.o libzpaq.o -pthread
 
 zpaq.1: zpaq.pod
 	pod2man $< >$@
@@ -27,10 +27,26 @@ install: zpaq zpaq.1
 	install -m 0644 zpaq.1 $(DESTDIR)$(MANDIR)/man1
 
 clean:
-	rm -f zpaq.o libzpaq.o zpaq zpaq.1 archive.zpaq zpaq.new
+	rm -f zpaq.o libzpaq.o zpaq zpaq.1 archive.zpaq zpaq.new *.gcda *.gcno
 
 check: zpaq
 	./zpaq add archive.zpaq zpaq
 	./zpaq extract archive.zpaq zpaq -to zpaq.new
 	cmp zpaq zpaq.new
 	rm archive.zpaq zpaq.new
+
+pgo-generate:
+	$(MAKE) clean
+	rm -f *.gcda *.gcno
+	$(MAKE) CXXFLAGS="$(CXXFLAGS) -fprofile-generate" LDFLAGS="$(LDFLAGS) -fprofile-generate" zpaq
+
+pgo-run:
+	./benchmark_zpaq.sh --quick
+
+pgo-use:
+	rm -f zpaq.o libzpaq.o zpaq
+	$(MAKE) CXXFLAGS="$(CXXFLAGS) -fprofile-use -fprofile-correction" LDFLAGS="$(LDFLAGS) -fprofile-use" zpaq
+
+pgo: pgo-generate pgo-run pgo-use
+
+.PHONY: all install clean check pgo-generate pgo-run pgo-use pgo
