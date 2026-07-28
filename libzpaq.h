@@ -1110,6 +1110,7 @@ struct alignas(64) Component {
   alignas(64) Array<U32> cm;  // cm[cxt] -> p in bits 31..10, n in 9..0; MATCH index
   alignas(64) Array<U8> ht;   // ICM/ISSE hash table[0..size1][0..15] and MATCH buf
   alignas(64) Array<U16> a16; // MIX weights
+  alignas(64) Array<int> v;   // MIX momentum velocity
   void init();    // initialize to all 0
   Component() {init();}
 };
