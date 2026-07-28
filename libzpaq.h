@@ -839,7 +839,15 @@ Use at your own risk.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cstring>
 #include <algorithm>
+
+#if defined(_MSC_VER) || defined(__MINGW32__)
+#include <malloc.h>
+#endif
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#endif
 
 namespace libzpaq {
 
@@ -885,21 +893,24 @@ int toU16(const char* p);
 // a(i) - index mod n, n must be a power of 2
 // a.size() - gets n
 template <typename T>
-class Array {
-  T *data;     // user location of [0] on a 64 byte boundary
+class alignas(64) Array {
+  T *data;     // 64-byte aligned pointer
   size_t n;    // user size
-  int offset;  // distance back in bytes to start of actual allocation
   void operator=(const Array&);  // no assignment
   Array(const Array&);  // no copy
 public:
-  Array(size_t sz=0, int ex=0): data(0), n(0), offset(0) {
+  Array(size_t sz=0, int ex=0): data(0), n(0) {
     resize(sz, ex);} // [0..sz-1] = 0
   void resize(size_t sz, int ex=0); // change size, erase content to zeros
   ~Array() {resize(0);}  // free memory
   size_t size() const {return n;}  // get size
   int isize() const {return int(n);}  // get size as an int
   T& operator[](size_t i) {assert(n>0 && i<n); return data[i];}
+  const T& operator[](size_t i) const {assert(n>0 && i<n); return data[i];}
   T& operator()(size_t i) {assert(n>0 && (n&(n-1))==0); return data[i&(n-1)];}
+  const T& operator()(size_t i) const {assert(n>0 && (n&(n-1))==0); return data[i&(n-1)];}
+  T* get_aligned_data() { return data; }
+  const T* get_aligned_data() const { return data; }
 };
 
 // Change size to sz<<ex elements of 0
@@ -910,22 +921,33 @@ void Array<T>::resize(size_t sz, int ex) {
     if (sz>sz*2) error("Array too big");
     sz*=2, --ex;
   }
-  if (n>0) {
-    assert(offset>0 && offset<=64);
-    assert((char*)data-offset);
-    ::free((char*)data-offset);
+  if (data) {
+#if defined(_MSC_VER) || defined(__MINGW32__)
+    _mm_free(data);
+#else
+    ::free(data);
+#endif
+    data = 0;
   }
-  n=0;
-  offset=0;
-  if (sz==0) return;
-  n=sz;
-  const size_t nb=128+n*sizeof(T);  // test for overflow
-  if (nb<=128 || (nb-128)/sizeof(T)!=n) n=0, error("Array too big");
-  data=(T*)::calloc(nb, 1);
-  if (!data) n=0, error("Out of memory");
-  offset=64-(((char*)data-(char*)0)&63);
-  assert(offset>0 && offset<=64);
-  data=(T*)((char*)data+offset);
+  n = 0;
+  if (sz == 0) return;
+  n = sz;
+  const size_t bytes = n * sizeof(T);
+  const size_t aligned_bytes = (bytes + 63) & ~size_t(63);
+#if defined(_MSC_VER) || defined(__MINGW32__)
+  data = static_cast<T*>(_mm_malloc(aligned_bytes, 64));
+#else
+  void* ptr = 0;
+  if (posix_memalign(&ptr, 64, aligned_bytes) != 0) {
+    ptr = 0;
+  }
+  data = static_cast<T*>(ptr);
+#endif
+  if (!data) {
+    n = 0;
+    error("Out of memory");
+  }
+  memset(data, 0, aligned_bytes);
 }
 
 //////////////////////////// SHA1 ////////////////////////////
@@ -1081,13 +1103,13 @@ private:
 // partial byte as context, adaptive m input mixer (without or with),
 // or SSE (without or with).
 
-struct Component {
+struct alignas(64) Component {
   size_t limit;   // max count for cm
   size_t cxt;     // saved context
   size_t a, b, c; // multi-purpose variables
-  Array<U32> cm;  // cm[cxt] -> p in bits 31..10, n in 9..0; MATCH index
-  Array<U8> ht;   // ICM/ISSE hash table[0..size1][0..15] and MATCH buf
-  Array<U16> a16; // MIX weights
+  alignas(64) Array<U32> cm;  // cm[cxt] -> p in bits 31..10, n in 9..0; MATCH index
+  alignas(64) Array<U8> ht;   // ICM/ISSE hash table[0..size1][0..15] and MATCH buf
+  alignas(64) Array<U16> a16; // MIX weights
   void init();    // initialize to all 0
   Component() {init();}
 };
@@ -1113,7 +1135,7 @@ public:
 ///////////////////////// Predictor //////////////////////////
 
 // A predictor guesses the next bit
-class Predictor {
+class alignas(64) Predictor {
 public:
   Predictor(ZPAQL&);
   ~Predictor();
@@ -1127,22 +1149,23 @@ public:
   }
 private:
 
-  // Predictor state
+  // Vectorized Hot State aligned to 64-byte boundaries
+  alignas(64) int p[256];           // predictions
+  alignas(64) U32 h[256];           // unrolled copy of z.h
+  alignas(64) Component comp[256];  // the model, includes P
+  alignas(64) U16 squasht[4096];    // squash() lookup table
+  alignas(64) short stretcht[32768];// stretch() lookup table
+  alignas(64) int dt2k[256];        // division table for match: dt2k[i] = 2^12/i
+  alignas(64) int dt[1024];         // division table for cm: dt[i] = 2^16/(i+1.5)
+
   int c8;               // last 0...7 bits.
   int hmap4;            // c8 split into nibbles
-  int p[256];           // predictions
-  U32 h[256];           // unrolled copy of z.h
   ZPAQL& z;             // VM to compute context hashes, includes H, n
-  Component comp[256];  // the model, includes P
   bool initTables;      // are tables initialized?
 
   // Modeling support functions
   int predict0();       // default
   void update0(int y);  // default
-  int dt2k[256];        // division table for match: dt2k[i] = 2^12/i
-  int dt[1024];         // division table for cm: dt[i] = 2^16/(i+1.5)
-  U16 squasht[4096];    // squash() lookup table
-  short stretcht[32768];// stretch() lookup table
   StateTable st;        // next, cminit functions
   U8* pcode;            // JIT code for predict() and update()
   int pcode_size;       // length of pcode

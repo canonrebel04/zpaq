@@ -1910,11 +1910,31 @@ int Predictor::predict0() {
         cr.cxt=h[i]+(c8&cp[5]);
         cr.cxt=(cr.cxt&(cr.c-1))*m; // pointer to row of weights
         assert(cr.cxt<=cr.cm.size()-m);
-        int* wt=(int*)&cr.cm[cr.cxt];
-        p[i]=0;
-        for (int j=0; j<m; ++j)
-          p[i]+=(wt[j]>>8)*p[cp[2]+j];
-        p[i]=clamp2k(p[i]>>8);
+        const int* wt=(const int*)&cr.cm[cr.cxt];
+        const int* p_src=&p[cp[2]];
+        int sum=0;
+        int j=0;
+#if defined(__AVX2__)
+        __m256i vsum = _mm256_setzero_si256();
+        for (; j <= m - 8; j += 8) {
+          __m256i vwt = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wt + j));
+          __m256i vp  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_src + j));
+          __m256i vwt_shift = _mm256_srai_epi32(vwt, 8);
+          __m256i vprod = _mm256_mullo_epi32(vwt_shift, vp);
+          vsum = _mm256_add_epi32(vsum, vprod);
+        }
+        __m128i vlow  = _mm256_castsi256_si128(vsum);
+        __m128i vhigh = _mm256_extracti128_si256(vsum, 1);
+        __m128i vhead = _mm_add_epi32(vlow, vhigh);
+        __m128i vshuf = _mm_shuffle_epi32(vhead, _MM_SHUFFLE(1, 0, 3, 2));
+        vhead = _mm_add_epi32(vhead, vshuf);
+        vshuf = _mm_shuffle_epi32(vhead, _MM_SHUFFLE(2, 3, 0, 1));
+        vhead = _mm_add_epi32(vhead, vshuf);
+        sum = _mm_cvtsi128_si32(vhead);
+#endif
+        for (; j < m; ++j)
+          sum += (wt[j] >> 8) * p_src[j];
+        p[i] = clamp2k(sum >> 8);
       }
         break;
       case ISSE: { // sizebits j -- c=hi, cxt=bh
@@ -2026,8 +2046,35 @@ void Predictor::update0(int y) {
         assert(cr.cxt+m<=cr.cm.size());
         int err=(y*32767-squash(p[i]))*cp[4]>>4;
         int* wt=(int*)&cr.cm[cr.cxt];
-        for (int j=0; j<m; ++j)
-          wt[j]=clamp512k(wt[j]+((err*p[cp[2]+j]+(1<<12))>>13));
+        const int* p_src = &p[cp[2]];
+        int j=0;
+#if defined(__AVX2__)
+        __m256i verr  = _mm256_set1_epi32(err);
+        __m256i v4096 = _mm256_set1_epi32(1 << 12);
+        __m256i vmin  = _mm256_set1_epi32(-524288);
+        __m256i vmax  = _mm256_set1_epi32(524287);
+
+        for (; j <= m - 8; j += 8) {
+          __m256i vwt = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wt + j));
+          __m256i vp  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_src + j));
+
+          // err * p[cp[2]+j]
+          __m256i vprod = _mm256_mullo_epi32(verr, vp);
+          
+          // (err * p + 4096) >> 13
+          __m256i vdelta = _mm256_srai_epi32(_mm256_add_epi32(vprod, v4096), 13);
+          
+          // wt + vdelta
+          __m256i vres = _mm256_add_epi32(vwt, vdelta);
+          
+          // clamp512k
+          __m256i vclamped = _mm256_min_epi32(_mm256_max_epi32(vres, vmin), vmax);
+          
+          _mm256_storeu_si256(reinterpret_cast<__m256i*>(wt + j), vclamped);
+        }
+#endif
+        for (; j < m; ++j)
+          wt[j]=clamp512k(wt[j]+((err*p_src[j]+(1<<12))>>13));
       }
         break;
       case ISSE: { // sizebits j  -- c=hi, cxt=bh
