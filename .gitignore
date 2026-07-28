@@ -5,3 +5,8 @@
 zp
 unzp
 zpaq
+*.tar.gz
+*.o
+zpaq
+benchmark_results/
+extracted.bin/
