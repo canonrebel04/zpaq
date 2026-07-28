@@ -1,0 +1,47 @@
+name: Cross-Platform Build & Release
+
+on:
+  push:
+    branches: [ master, main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }} (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+            artifact_name: zpaq-linux-x86_64
+          - os: windows-latest
+            target: windows-x86_64
+            artifact_name: zpaq-windows-x86_64.exe
+          - os: macos-latest
+            target: macos-arm64
+            artifact_name: zpaq-macos-arm64
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+          mv zpaq ${{ matrix.artifact_name }}
+
+      - name: Build (Windows MSVC)
+        if: runner.os == 'Windows'
+        run: |
+          cl /O2 /EHsc zpaq.cpp libzpaq.cpp advapi32.lib /Fe:${{ matrix.artifact_name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
