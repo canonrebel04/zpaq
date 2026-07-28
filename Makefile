@@ -1,7 +1,7 @@
 CXX=g++
 CPPFLAGS+=-Dunix
 # CPPFLAGS+=NOJIT
-CXXFLAGS=-O3 -march=native
+CXXFLAGS=-O3 -march=native -mavx2 -flto=auto -funroll-loops
 PREFIX=/usr/local
 BINDIR=$(PREFIX)/bin
 MANDIR=$(PREFIX)/share/man
