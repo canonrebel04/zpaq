@@ -10,3 +10,4 @@ zpaq
 zpaq
 benchmark_results/
 extracted.bin/
+tests/sha1_test
