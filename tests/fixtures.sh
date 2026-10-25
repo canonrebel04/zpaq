@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Format-compatibility regression test that needs no reference binary.
 # tests/fixtures/up715-m*.zpaq were made by unmodified zpaq 7.15 (JIT build)
-# from tests/fixtures/input.bin. Each must extract byte-for-byte, and
+# from tests/fixtures/input.bin with -noattributes (so sizes do not depend on
+# the OS). Each must extract byte-for-byte, and
 # recompressing input.bin with the same method must give an archive of the
 # same size (ZPAQ coding is deterministic, so a model change shows up here).
 #
@@ -21,7 +22,7 @@ for a in "$D"/up715-m*.zpaq; do
      cmp -s "$D/input.bin" "$W/t/x/input.bin"; then :; else
     echo "FAIL: extract $base"; fail=$((fail+1)); fi
   n=$((n+1))
-  (cd "$W/t" && "$ZP" a new.zpaq input.bin -m"$m" -t1 >/dev/null 2>&1) || true
+  (cd "$W/t" && "$ZP" a new.zpaq input.bin -m"$m" -t1 -noattributes >/dev/null 2>&1) || true
   sa=$(wc -c < "$a" | tr -d ' '); sb=$(wc -c < "$W/t/new.zpaq" 2>/dev/null | tr -d ' ' || echo 0)
   [ "$sa" = "$sb" ] || { echo "FAIL: -m$m archive size $sb, 7.15 gives $sa"; fail=$((fail+1)); }
 done
