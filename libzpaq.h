@@ -1053,6 +1053,7 @@ public:
   void initp();           // Initialize as PCOMP to run
   double memory();        // Return memory requirement in bytes
   void run(U32 input);    // Execute with input
+  void run(const U8* in, int n);  // Execute once per byte of in[0..n-1]
   int read(Reader* in2);  // Read header
   bool write(Writer* out2, bool pp); // If pp write PCOMP else HCOMP header
   int step(U32 input, int mode);  // Trace execution (defined externally)
@@ -1083,6 +1084,7 @@ private:
   int pc;             // program counter
   int rcode_size;     // length of rcode
   U8* rcode;          // JIT code for run()
+  const U8* batch[2]; // JIT run(in, n): next input byte, end of input
 
   // Support code
   int assemble();  // put JIT code in rcode
@@ -1110,7 +1112,6 @@ struct alignas(64) Component {
   alignas(64) Array<U32> cm;  // cm[cxt] -> p in bits 31..10, n in 9..0; MATCH index
   alignas(64) Array<U8> ht;   // ICM/ISSE hash table[0..size1][0..15] and MATCH buf
   alignas(64) Array<U16> a16; // MIX weights
-  alignas(64) Array<int> v;   // MIX momentum velocity
   void init();    // initialize to all 0
   Component() {init();}
 };
@@ -1150,7 +1151,12 @@ public:
   }
 private:
 
-  // Vectorized Hot State aligned to 64-byte boundaries
+  // c8 and hmap4 must stay first: the JIT code in assemble_p() reads
+  // hmap4 with an 8-bit displacement from the Predictor base.
+  int c8;               // last 0...7 bits.
+  int hmap4;            // c8 split into nibbles
+
+  // Hot state aligned to 64-byte boundaries
   alignas(64) int p[256];           // predictions
   alignas(64) U32 h[256];           // unrolled copy of z.h
   alignas(64) Component comp[256];  // the model, includes P
@@ -1159,8 +1165,6 @@ private:
   alignas(64) int dt2k[256];        // division table for match: dt2k[i] = 2^12/i
   alignas(64) int dt[1024];         // division table for cm: dt[i] = 2^16/(i+1.5)
 
-  int c8;               // last 0...7 bits.
-  int hmap4;            // c8 split into nibbles
   ZPAQL& z;             // VM to compute context hashes, includes H, n
   bool initTables;      // are tables initialized?
 
@@ -1231,6 +1235,20 @@ public:
     return rpos<wpos ? U8(buf[rpos++]) : -1;
   }
   int buffered() {return wpos-rpos;}  // how far read ahead?
+  bool isModeled() {return pr.isModeled();}
+  // For unmodeled (stored) data, point p at up to n already-buffered bytes
+  // of the current subblock and consume them. Returns 0 if the caller
+  // should fall back to decompress().
+  int getStored(const U8*& p, int n) {
+    if (curr==0 || rpos==wpos) return 0;
+    U32 k=wpos-rpos;
+    if (k>curr) k=curr;
+    if (k>U32(n)) k=n;
+    p=(const U8*)&buf[rpos];
+    rpos+=k;
+    curr-=k;
+    return k;
+  }
 private:
   U32 low, high;     // range
   U32 curr;          // last 4 bytes of archive or remaining bytes in subblock
@@ -1252,6 +1270,7 @@ public:
   PostProcessor(): state(0), hsize(0), ph(0), pm(0) {}
   void init(int h, int m);  // ph, pm sizes of H and M
   int write(int c);  // Input a byte, return state
+  void write(const U8* p, int n);  // Input n bytes (state PASS or POST)
   int getState() const {return state;}
   void setOutput(Writer* out) {z.output=out;}
   void setSHA1(SHA1* sha1ptr) {z.sha1=sha1ptr;}

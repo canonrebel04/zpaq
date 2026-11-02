@@ -1,0 +1,861 @@
+#   zpaq.pod - zpaq v7.12 man page source
+#
+#   Copyright
+#
+#       Released to public domain by Matt Mahoney in 2015-2016.
+#
+#   Description
+#
+#	To learn what TOP LEVEL section to use in manual pages,
+#	see POSIX/Susv standard and "Utility Description Defaults" at
+#	http://www.opengroup.org/onlinepubs/009695399/utilities/xcu_chap01.html#tag_01_11
+#
+#	This is manual page in Perl POD format. Read more at
+#	http://perldoc.perl.org/perlpod.html or run command:
+#
+#	    perldoc perlpod | less
+#
+#	To check the syntax:
+#
+#	    podchecker *.pod
+#
+#	Create manual page with command:
+#
+#	    pod2man PAGE.N.pod > PAGE.N
+
+=pod
+
+=head1 NAME
+
+zpaq - Journaling archiver for incremental backups.
+
+=head1 SYNOPSIS
+
+zpaq I<command> I<archive>[C<.zpaq>] [I<files>]... [-I<options>]...
+
+=head1 DESCRIPTION
+
+I<zpaq> manages journaling archives for incremental user-level
+local or remote backups
+that conform to I<The ZPAQ Open Standard Format for Highly Compressed Data>
+(see I<AVAILABILITY>). The format supports encrypted, deduplicated, and
+compressed single or multi-part archives with rollback capability.
+It supports archives as large as 1000 times available memory or up to
+250 TB and 4 billion files, interoperable between Windows
+and Unix/Linux/OS X.
+
+=head1 COMMANDS
+
+I<command> is one of C<add>, C<extract>, or C<list>
+Commands may be abbreviated to C<a>, C<x>, or C<l> respectively.
+I<archive> is assumed to have a C<.zpaq> extension if no extension is
+specified.
+
+If I<archive> contains wildcards C<*> or C<?>, then the archive is
+in multiple parts where C<*> matches the part number and C<?> matches
+single digits. zpaq will consider the concatenation of the parts in
+numerical order starting with 1 to be equivalent to a single archive.
+For example, C<arc??> would match the concatenation of C<arc01.zpaq>,
+C<arc02.zpaq>, etc. up to the last existing part.
+
+=over
+
+=item a
+
+=item add
+
+Append changes in I<files> to I<archive>, or create I<archive> if it does not
+exist. I<files> is a list of file and directory names separated by spaces. If a
+name is a directory, then it recursively includes all
+files and subdirectories within. In Windows, I<files> may contain
+wildcards C<*> and C<?> in the last component of the path (after the last slash).
+C<*> matches any string and C<?> matches any character. In Unix/Linux, wildcards
+are expanded by the shell, which has the same effect.
+
+A change is an addition, update, or deletion of any file or directory in
+I<files> or any of its subdirectories to any depth. A file or directory is
+considered changed if its size or last-modified date (with 1 second resolution),
+or Windows attributes or Unix/Linux permissions (if saved)
+differ between the internal
+and external versions. File contents are not compared. If the attributes
+but not the date has changed, then the attributes are updated in the
+archive with the assumption that the file contents have not changed.
+
+Files are added by splitting them into fragments along content-dependent
+boundaries, computing their SHA-1 hashes, and comparing with hashes already
+stored in the archive. If the hash matches, it is assumed that the fragments
+are identical and only a pointer to the previous compressed fragment is
+saved. Unmatched fragments are packed into blocks, compressed, and appended
+to the archive.
+
+For each added or updated file or directory, the following information is saved
+in the archive: the compressed contents, fragment hashes, the file or directory
+name as it appears in I<files> plus any trailing path, the last-modified
+date with 1 second resolution, and the Unix/Linux permissions or Windows
+attributes. Other metadata such as owner, group, ACLs,
+last access time, etc. are not saved. Symbolic links are not saved or followed.
+Hard links are followed as if they were ordinary files. Special file types
+such as devices, named pipes, and named sockets are not saved.
+The 64 bit Windows version will save alternate data streams.
+
+If any file cannot be read (e.g. permission denied), then it is skipped and
+a warning is reported. However, other files are still added and the update
+is still valid.
+
+If I<archive> is C<""> (a quoted empty string), then zpaq compresses
+I<files> as if creating a new archive, but discards the output without
+writing to disk.
+
+If I<archive> is multi-part, the zpaq will create a new part using
+the next available part number. For example:
+
+    zpaq add "arc??" files   (creates arc01.zpaq)
+    zpaq add "arc??" files   (creates arc02.zpaq)
+    zpaq add "arc??" files   (creates arc03.zpaq)
+    zpaq extract "arc??"     (extracts all parts)
+
+Updates are transacted. If zpaq is interrupted before completing
+the update, then the partially appended data is ignored and overwritten on the
+next update. This is accomplished by first appending a temporary update header,
+appending the compressed data and index, then updating the header as the
+last step.
+
+As the archive is updated, the program will report the percent complete, estimated
+time remaining, the name and size of the file preceded by C<+> if the file
+is being added, C<#> if updated, or C<-> if deleted. If the file
+is deduplicated, then the new size after deduplication but before
+compression is shown.
+
+=item x
+
+=item extract
+
+Extract I<files> (including the contents of directories), or extract
+the whole archive contents if I<files> is omitted.
+The file names, last-modified date,
+and permissions or attributes are restored as saved in the archive.
+If there are multiple versions of a file stored, then only the latest
+version is extracted. If a stored file has been marked as deleted,
+then it is not extracted.
+
+Existing files are skipped without being overwritten. (Use C<-force>
+to overwrite).
+
+As files are extracted, the fragment SHA-1 hashes are computed and compared
+with the stored hashes. The program reports an error in case of mismatches.
+Blocks are only decompressed up to the last used fragment.
+If the archive is damaged, then zpaq will extract as much as possible
+from the undamaged blocks.
+
+As files are extracted, the program reports the percent completed,
+estimated time remaining, and the name of the file preceded by ">"
+if the file is created or overwritten (with C<-force>), C<?> if
+the file is skipped because it already exists, or C<=> if decompression is
+skipped with C<-force> because the contents were compared and
+found to be identical. The date and attributes are still
+extracted in this case.
+
+=item l
+
+=item list
+
+List the archive contents. With I<files>, list only the specified
+files and directories and compare them with the same files on disk.
+For each file or directory, show the comparison result,
+last modified date, uncompressed size,
+Windows attributes or Unix/Linux permissions,
+and the saved name. If the internal and external
+versions of the file differ, then show both.
+
+The comparison result is reported in the first column as C<=> if the
+last-modified date, attributes (if saved), and size are identical,
+C<#> if different, C<-> if the external file does not exist, or
+C<+> if the internal file does not exist. With C<-force>, the
+contents are compared, but not the dates or attributes. Contents
+are compared by reading the files, computing SHA-1 hashes and comparing
+with the stored hashes. In either
+case, replacing C<list> with C<add> will show exactly what changes
+would be made to the archive.
+
+In Unix/Linux, permissions are listed as a file type C<d> for directory
+or blank for a regular file, followed by a 4 digit octal number as
+per C<chmod(1)>. In Windows, attributes are listed from the set
+C<RHS DAdFTprCoIEivs> where the character is present if
+the corresponding bit 0..17 is set as returned by GetFileAttributes().
+The meanings are as follows: C<R>ead-only, C<H>idden,
+C<S>ystem, unused (blank), C<D>irectory, C<A>rchive, C<d>evice,
+normal C<F>ile, C<T>emporary, sC<p>arse file, C<r>eparse point,
+C<C>ompressed, C<o>ffline, not content C<I>indexed, C<E>ncrypted,
+C<i>ntegrity stream, C<v>irtual, no C<s>crub data.
+
+I<archive> may be "", which is equivalent to comparing with an empty
+archive.
+
+=back
+
+=head1 OPTIONS
+
+=over
+
+=item -all [I<N>]
+
+With C<list>, list all saved versions and not just the latest version,
+including versions where the file is marked as deleted. Each version
+is shown in a separate numbered directory beginning with C<0001/>.
+Absolute paths are first converted to relative paths. In Windows, the C<:>
+on the drive letter is removed. For example, C<foo> and C</foo> are
+shown as C<0001/foo>. C<C:/foo> and C<C:foo> are shown as C<0001/C/foo>.
+
+The date shown on the root directory of each version is the date of the
+update. The root directory listing also shows the number of updates
+and deletions in that version and the compressed size. 
+
+When a file is deleted, it is shown with the dates and attributes
+blank with size 0. 
+
+With C<extract>, extract the files in each version as shown with C<list -all>.
+
+I<N> selects the number of digits in the directory name. The default is 4.
+More digits will be used when necessary. For example:
+
+    zpaq list archive -all 2 -not "??/?*"
+
+will show the dates when the archive was updated as C<01/>, C<02/>,
+etc. but not their contents.
+
+=item -f
+
+=item -force
+
+With C<add>, attempt to add files even if the last-modified date has
+not changed. Files are added only if they really are different, based
+on comparing the computed and stored SHA-1 hashes
+
+With C<extract>, overwrite existing output files. If the
+contents differ (tested by comparing SHA-1 hashes), then the file is
+decompressed and extracted. If the dates or attributes/permissions
+differ, then they are set to match those stored in the archive.
+
+With C<list> I<files>, compare files by computing SHA-1 fragment hashes
+and comparing with stored hashes. Ignore differences in dates and
+attributes.
+
+=item -fragment I<N>
+
+Set the dedupe fragment size range from 64 2^I<N> to 8128 2^I<N>
+bytes with an average size of 1024 2^I<N> bytes. The default is 6
+(range 4096..520192, average 65536). Smaller fragment sizes can
+improve compression through deduplication of similar files, but
+require more memory and more overhead. Each fragment adds about 28 bytes
+to the archive and requires about 40 bytes of memory. For the default,
+this is less than 0.1% of the archive size.
+
+Values other than 6 conform to the ZPAQ specification and will decompress
+correctly by all versions, but do not conform to the recommendation
+for best deduplication. Adding identical files with different values
+of I<N> will not deduplicate because the fragment boundaries will differ.
+C<list -summary> will not identify these files as identical for
+the same reason.
+
+=item -index I<indexfile>
+
+With C<add>, create I<archive>C<.zpaq> as a suffix to append to a remote
+archive which is assumed to be identical to I<indexfile> except that
+I<indexfile> contains no compressed file contents (D blocks).
+Then update I<indexfile> by appending a copy of I<archive>C<.zpaq>
+without the D blocks. With C<extract>, specify the index to create
+for I<archive>C<.zpaq> and do not extract any files.
+
+The purpose is to maintain a backup offsite without using much
+local disk space. The normal usage is to append the suffix at the
+remote site and delete it locally, keeping only the much smaller index.
+For example:
+
+    zpaq add part files -index index.zpaq
+    cat part.zpaq >> remote.zpaq
+    rm part.zpaq
+
+I<indexfile> has no default extension. However, with a C<.zpaq>
+extension it can be listed to show the contents of the remote archive
+or compare with local files. It cannot be extracted or updated as
+a regular archive. Thus, the following should produce identical output:
+
+    zpaq list remote.zpaq
+    zpaq list index.zpaq
+
+If I<archive> is multi-part (contains C<*> or C<?>), then zpaq will
+substitute a part number equal to 1 plus the number of previous updates.
+The parts may then be accessed as a multi-part archive without
+appending or renaming.
+
+With C<add>, it is an error if the I<archive> to be created
+already exists, or if I<indexfile> is a regular archive. C<-index>
+cannot be used with C<-until> or a streaming archive C<-method s...>.
+With C<extract>, it is an error if I<indexfile> exists and C<-force>
+is not used to overwrite.
+
+=item -key I<password>
+
+This option is required for all commands operating on an encrypted archive.
+When creating a new archive with C<add>, the new archive will be encrypted
+with I<password> and all subsequent operations will require the same
+password.
+
+An archive is encrypted with AES-256 in CTR mode. The password is
+strengthened using Scrypt(SHA-256(password), salt, N=16384, r=8, p=1),
+which would require 208M operations and 16 MB memory per test in a
+brute force key search.
+When creating a new archive, a 32 byte salt is generated
+using CryptGenRandom() in Windows or from /dev/urandom in Unix/Linux,
+such that the first byte is different from the normal header
+of an unencrypted archive (C<z> or C<7>). A multi-part archive
+is encrypted with a single keystream as if the parts were concatenated.
+An index is encrypted with the same password, where the first byte
+of the salt is modified by XOR with ('z' XOR '7').
+
+Encryption provides secrecy but not authentication. An attacker
+who knows or can guess any bits of the plaintext can set them without
+knowing the key.
+
+=item -mI<type>[I<Blocksize>[.I<pre>[.I<arg>][I<comp>[.I<arg>]]...]]
+
+=item -method I<type>[I<Blocksize>[.I<pre>[.I<arg>][I<comp>[.I<arg>]]...]]
+
+With C<add>, select a compression method. I<type> may be 0, 1, 2, 3, 4,
+5, C<x>, or C<s>. The optional I<Blocksize> may be 0..11, written with
+no space after the type, like C<-m10> or C<-method 511>. The remaining
+arguments, separated by periods or commas without spaces, are only allowed for
+types C<x> or C<s>, for example C<-mx4.3ci1>.
+
+If I<type> is numeric, then higher numbers compress better but are slower.
+The default is C<-m1>. It is recommended for backups. C<-m2> compresses
+slower but decompresses just as fast as 1. It is recommended for
+archives to be compressed once and decompressed many times, such as
+downloads. C<-m0> stores with deduplication but no further compression.
+
+I<Blocksize> says
+to pack fragments into blocks up to 2^I<Blocksize> MiB. Using larger
+blocks can improve compression but require more memory and may be slower
+because each block is compressed or decompressed by a separate thread.
+The memory requirement is up to 8 times I<Blocksize> per thread
+for levels up to 4 and 16 times block size per thread for level 5.
+The default I<Blocksize> is 4 (16 MiB) for types 0 and 1, and 6 (64 MiB)
+otherwise.
+
+Types C<x> and C<s> are for experimental use. Normally, zpaq selects
+different methods depending on the compression level
+and an analysis of the data (text, executable, or other binary,
+and degree of compressibility).
+I<type> selects journaling or streaming format.
+I<pre> is 0..7 selecting a preprocessing step (LZ77, BWT, E8E9),
+I<comp> is a series of context modeling components from the
+set {c,i,a,w,m,s,t} selecting a CM or ICM, ISSE chain, MATCH,
+word model, MIX, SSE, or MIX2 respectively. I<pre> and I<comp> may be followed
+by a list of numeric arguments (I<arg>) separated by periods or commas.
+For example:
+
+    -method x6.3ci1
+
+selects a journaling archive (x), block size 2^6 = 64 MiB, BWT transform (3),
+an order 0 ICM (c), and order 1 ISSE (i1). (zpaq normally selects this method
+for level 3 text compression). I<type> is as follows.
+
+=over
+
+=item x
+
+Selects normal (journaling) mode. Files are split into fragments, deduplicated,
+packed into blocks, and compressed by the method described. The compressed
+blocks are preceded by a transaction header giving the date of the update.
+The blocks are followed by a list of fragment hashes and sizes and a list
+of files added, updated, or deleted. Each added or updated file lists
+the last-modifed date, attributes, and a list of fragment IDs.
+
+=item s
+
+Selectes streaming mode for single-pass extraction and compatibility with
+zpaq versions prior to 6.00 (2012). Streaming archives do not support
+deduplication or rollback. Files are split into fragments of size
+2^I<blocksize> MiB - 4 KiB. Each file or fragment is compressed in a
+separate block with no attempt at deduplication. The file name, date,
+and attributes are stored in the header of the first fragment. The hashes
+are stored in the trailers of each block. There is no transaction block
+to allow rollback. Files are added to the previously dated update.
+Streaming mode with C<-index> is an error.
+
+=item I<pre>[.I<min1>.I<min2>.I<depth>.I<size>[.I<lookahead>]]
+
+I<pre> selects a pre/post processing step before context modeling as follows.
+
+    0 = no preprocessing
+    1 = Packed LZ77
+    2 = Byte aligned LZ77
+    3 = BWT (Burrows-Wheeler Transform)
+    4 = E8E9
+    5 = E8E9 + packed LZ77 
+    6 = E8E9 + byte aligned LZ77
+    7 = E8E9 + BWT
+
+The E8E9 transform (4..7) improves the compression of x86 executable
+files (.exe or .dll). The transform scans backward for 5 byte patterns of
+the form (E8|E9 xx xx xx 00|FF) hex and adds the block offset to the three
+middle bytes. The E8 and E9 opcodes are CALL and JMP, respectively. The
+transform replaces relative addresses with absolute addresses. The transform
+is applied prior to LZ77 or BWT. Decompression reverses the transforms
+in the opposite order.
+
+LZ77 (1, 2, 5, 6) compresses by searching for matching strings using a
+hash table or suffix array and replacing them with pointers to the previous
+match. Types 1 and 2 select variable bit length coding or byte aligned coding
+respectively.
+Variable bit length encoding compresses better by itself, but byte aligned
+coding allows for further compression using a context model.
+Types 6 and 7 are the same as 1 and 2 respectively, except that the
+block is E8E9 transformed first.
+
+BWT (Burrows Wheeler Transform, 3 or 7), sorts the input block by
+context, which brings bytes with similar contexts together. It does not
+compress by itself, but makes the input suited to compression
+with a fast adapting low order context model.
+
+The remaining arguments apply only to LZ77.
+I<min1> selects the minimum match length, which must be at least 4 for
+packed LZ77 or 1 for byte aligned LZ77. I<min2> selects a longer minimum
+match length to try first, or is 0 to skip this step. The block is encoded
+by testing 2^I<depth> locations indexed by a hash table of
+2^I<size> elements indexed by hashes of the next I<min2> and then I<min1>
+characters. If I<lookahead> is specified and greater than 0, then, the
+search is repeated I<lookahead> + 1 times to consider coding the next
+0 to I<lookahead> bytes as literals to find a longer match.
+
+If I<size> = I<blocksize> + 21, then matches are found using a suffix
+array instead of a hash table, scanning forward and backward 2^I<depth>
+elements to find the longest past match. I<min2> has no effect.
+A suffix array requires 4.5 x 2^I<blocksize> MiB memory. A hash table requires
+4 x 2^I<size> bytes memory. For example:
+
+    -method x6.1.4.0.5.27.1
+
+specifies 64 MiB blocks (6), variable length LZ77 without E8E9 (1), minimum
+match length 4, no secondary search (0), search depth 2^5 = 32 in each
+direction in the suffix array (27 = 6 + 21), and 1 byte lookahead.
+
+=back
+
+I<comp> specifies a component of a context model. If this section is
+empty, then no further compression is performed. Otherwise the block
+is compressed by an array of components. Each component takes a context
+and possibly the outputs of earlier components, and outputs
+a prediction, a probability that the next bit of input is a 1.
+The final prediction is used to arithmetic code the bit.
+Components normally allocate memory equal to the block size, or less for
+smaller contexts as needed. Components are as follows:
+
+=over
+
+=item c[.I<maxcount>[.I<offset>[.I<mask>]...]]
+
+Specifies a context model (CM), or indirect context model (ICM). A CM
+maps a context hash to a prediction by looking up the context in a table,
+and then adjusts the prediction to reduce the coding error by 1/count,
+where count is bounded by I<maxcount> x 4, and I<maxcount> is in 1..255.
+
+If I<maxcount> is 0, then specify an ICM. An ICM maps a context to
+a state representing two bit counts and the most recent bit. That state
+is mapped to a prediction and updated at a fixed rate. An ICM adapts faster
+to changing statistics. A CM with a high count compresses stationary
+data better. The default is 0 (ICM).
+
+If I<maxcount> has the form 1000I<m> + n, then the effect is the same
+as I<maxcount> = n while reducing memory to 1/2^m of block size.
+
+The remaining arguments represent contexts, all of which are hashed
+together. If I<offset> is 1..255, then the block offset mod I<offset>
+is hashed in. If I<offset> is 1000..1255, then the distance to the last
+occurrance of I<offset> - 1000 is hashed in. For example, C<c0.1010>
+specifies an ICM taking the text column number (distance back to the last
+linefeed = 10) as context. The default is 0 (no context).
+
+Each I<mask> is ANDed with previous bytes. For example, C<c0.0.255.255.255>
+is an ICM with order 3 context. A value in 256..511 specifies a context
+of I<mask> - 256 hashed together with the byte aligned LZ77 parse state
+(whether a literal or match code is expected). For example,
+C<-method x6.2.12.0.8.27c0.0.511.255> specifes block size 2^6 MiB,
+byte aligned LZ77 (2), minimum match length 12, search depth 2^8,
+suffix array search (27 = 6 + 21), an ICM (c0), no offset context (0),
+and order 2 context plus LZ77 state (511.255).
+
+A mask greater than 1000 is shorthand for I<mask> - 1000 zeros. For example,
+the sparse context C<c0.0.255.1003.255> is equivalent to C<c0.0.255.0.0.0.255>.
+
+=item m[I<size>[.I<rate>]]
+
+Specifies a MIX (mixer). A MIX computes a weighted average of the predictions
+of all previous components. (The averaging is in the logistic domain:
+log(p / (1 - p))). The weights are then adjusted in proportion to I<rate>
+(0..255) to reduce the prediction error. A I<size> bit context can be
+used to select a set of weights to be used. The first 8 bits of context
+are the previously coded bits of the current byte. The default is C<m8.24>.
+A MIX with n inputs requires 4n x 2^I<size> bytes of memory.
+
+=item t[I<size>[.I<rate>]]
+
+Specifies a MIX2. A MIX2 is like a MIX except that it takes only the
+last 2 components as input, and its weights are constrained to add to 1.
+A MIX2 requires 4 x 2^I<size> bytes of memory. The default is C<t8.24>.
+
+=item s[I<size>[.I<mincount>[.I<maxcount>]]]
+
+Specifes a SSE (secondary symbol estimator). A SSE takes the last I<size>
+bits of context and the quantized and interpolated prediction of the
+previous component as input to output an adjusted prediction. The output
+is adjusted to reduce the prediction error by 1/count, where the count
+is constrained between I<mincount> and 4 x I<maxcount>. The default
+is C<s8.32.255>.
+
+=item iI<order>[.I<increment>]...
+
+Specifies an ISSE (indirect secondary symbol estimator) chain. An ISSE adjusts
+the predition of the previous component by mixing it with a constant 1.
+The pair of mixing weights is selected by a bit history state (like an ICM).
+The bit history is selected by a hash of the last I<order> bytes hashed
+together with the context of the previous component. Each I<increment>
+specifies an additional ISSE whose context order is increased
+by I<increment>. For example, C<ci1.1.2> specifies an order 0 ICM
+and order 1, 2, and 4 ISSEs.
+
+=item w[I<order>[.I<A>[.I<Z>[.I<cap>[.I<mul>[.I<mem>]]]]]]
+
+Specifies an ICM-ISSE chain of length I<order> taking as contexts the
+hashes of the last 1, 2, 3..., I<order> whole words. A word is defined
+as a sequence of characters in the range I<A> to I<A> + I<Z> - 1, ANDed
+with I<cap> before hashing. The hash H is updated by byte c as
+H := (H x I<mul> + c) (mod 2^(I<blocksize> + 24 - I<mem>)).
+Each component requires 2^(I<blocksize>
+- I<mem>) MiB. The default is C<w1.65.26.223.20.0>, which defines a
+word as 65..90 (A..Z). ANDing with 223 converts to upper case before
+hashing. I<mul> = 20 has the effect of shifting 2 bits left. For typical
+block sizes (28 or 30 bit H), the word hash depends on the last
+14 or 15 letters.
+
+=item a[I<mul>[.I<bmem>][.I<hmem>]]]
+
+Specifies a MATCH. A MATCH searches for a past matching context and predicts
+whatever bit came next. The search is done by updating a context hash H
+with byte c by H := H x I<mul> + c (mod 2^(I<blocksize> + 18 - I<hmem>)).
+A MATCH uses 2^(I<blocksize> - I<bmem>) MiB history buffer and a
+2^(I<blocksize> - I<hmem>) MiB hash table. The default is I<a24.0.0>.
+If I<blocksize> is 6, then H is 24 bits. I<mul> = 24 shifts 4 bits
+left, making the context hash effectively order 6.
+
+=back
+
+=item -noattributes
+
+With C<add>, do not save Windows attributes or Unix/Linux permissions
+to the archive. With C<extract>, ignore the saved values and extract using
+default values. With C<list>, do not list or compare attributes.
+
+=item -not [I<file>]...
+
+=item -not =[#+-?^]...
+
+In the first form, do not add, extract, or list files that match any I<file>
+by name. I<file> may contain
+wildcards C<*> and C<?> that match any string or character respectively,
+including C</>. A match to a directory also matches all of
+its contents. In Windows, matches are not case sensitive, and C<\>
+matches C</>. In Unix/Linux, arguments with wildcards must be quoted
+to protect them from the shell.
+
+When comparing with C<list> I<files>, C<-not => means do not list identical
+files. Additonally it is possible to suppress listing of
+differences with C<#>, missing external files with C<->, missing
+internal files with C<+>, and duplicates (C<list -summary>) with C<^>.
+
+=item -only I<file>...
+
+Do not add, extract, or list any files unless they match
+at least one argument. The rules for matching wildcards are the
+same as C<-not>. The default is C<*> which matches everything.
+
+If a file matches an argument to both C<-only> and C<-not>, then
+C<-not> takes precedence.
+
+=item -repack I<new_archive> [I<new_password>]
+
+With C<extract>, store the extracted files in I<new_archive> instead
+of writing them individually to disk. If I<new_password> is specified,
+then the output is encrypted with this password. Otherwise the
+output is not encrypted, even if the input is.
+
+It is an error if I<new_archive>
+exists unless C<-force> is used to allow it to be overwritten.
+I<new_archive> does not automatically get a C<.zpaq> extension.
+
+Repacking is implemented by copying those D blocks (compressed file contents)
+which are referenced by at least one selected file. This can result in
+a larger archive than a new one because unreferenced fragments in the
+same block are also copied.
+
+The repacked archive block dates range from the first to last
+update of the input archive. Using C<add -until> with a date between these
+two dates will result in the date being adjust to 1 second after the
+last update.
+
+With C<-all>, the input archive is simply copied without modification
+except to decrypt and encrypt. Thus, the input may be any file, not
+just an archive. I<files> and the options C<-to>, C<-not>, C<-only>,
+C<-until>, C<-noattributes>, and C<-method> are not valid with C<-repack -all>.
+
+=item -sI<N>
+
+=item -summary I<N>
+
+With C<list>, sort by decreasing size and show only the I<N>
+largest files and directories. Label duplicates of the previous
+file with C<^>. A file is a duplicate if its contents are identical
+(based on stored hashes)
+although the name, dates, and attributes may differ. If I<files>
+is specified, then these are included in the listing but not compared
+with internal files or each other.
+Internal and external files are labeled with C<-> and C<+> respectively.
+
+If I<N> is negative as in C<-s-1> then list normally but show
+fragment IDs after each file name. Files with identical fragment IDs have
+identical contents.
+
+With C<add> and C<extract>, when I<N> > 0, do not list files as they
+are added or extracted. Show only percent completed and estimated
+time remaining on a 1 line display.
+
+=item -test
+
+With C<extract>, do not write to disk, but perform all
+other operations normally. C<extract> will decompress, compute
+the SHA-1 hashes of the output, report if it differs from the stored
+value, but not compare, create or update any files. With C<-index>,
+test for errors but do not create an index file.
+
+=item -tI<N>
+
+=item -threads I<N>
+
+Add or extract at most I<N> blocks in parallel. The default is 0, which
+uses the number of processor cores, except not more than 2 when when zpaq
+is compiled to 32-bit code. Selecting fewer threads will reduce memory
+usage but run slower. Selecting more threads than cores does not help.
+
+=item -to I<name>...
+
+With C<add> and C<list> rename external I<files> to respective
+internal I<names>. With C<extract>, rename internal I<files>
+to external I<names>. When I<files> is empty, prefix the extracted
+files with the first name in I<names>, inserting C</> if needed
+and removing C<:> from drive letters. For example:
+
+    zpaq extract archive file dir -to newfile newdir
+
+extracts C<file> as C<newfile> and C<dir> as C<newdir>.
+
+    zpaq extract archive -to tmp
+
+will extract C<foo> or C</foo> as C<tmp/foo> and extract C<C:/foo>
+or C<C:foo> as C<tmp/C/foo>.
+
+    zpaq add archive dir -to newdir
+
+will save C<dir/file> as C<newdir/file>, and so on.
+
+    zpaq list archive dir -to newdir
+
+will compare external C<dir> with internal C<newdir>.
+
+The C<-only> and C<-not> options apply prior to renaming.
+
+=item -until I<date> | [-]I<version>
+
+Ignore any part of the archive updated after I<date> or after I<version>
+updates or -I<version>s from the end if negative.
+Additionally, C<add> will truncate the archive at
+this point before appending the next update. When a date is specified,
+the update will be timestamped with I<date> rather than the current date.
+
+A date is specified as a 4 digit year (1900 to 2999), 2 digit month (01 to 12),
+2 digit day (01 to 31), optional 2 digit hour (00 to 23, default 23),
+optional 2 digit minute (00 to 59, default 59), and optional 2 digit
+seconds (00 to 59, default 59). Dates and times are always universal
+time zone (UT), not local time. Numbers up to 9999999 are interpreted
+as version numbers rather than dates. Dates may contain spaces and
+punctuation characters for readability but are ignored. For example:
+
+    zpaq list backup -until 3
+
+shows the archive as it existed after the first 3 updates.
+
+    zpaq add backup files -until 2014/04/30 11:30
+
+truncates any data added after April 30, 2014 at 11:30:59 universal time,
+then appends the update as if this were the current time. (It does
+not matter if any files are dated in the future).
+
+    zpaq add backup files -until 0
+
+deletes backup.zpaq and creates a new archive.
+
+C<add -until> is an error on multi-part archives or with an index.
+A multi-part archive can be rolled back by deleting the highest numbered
+parts.
+
+Truncating and appending an encrypted archive with C<add -until>
+(even C<-until 0>)
+does not change the salt or keystream. Thus, it is possible for an attacker
+with the old and new versions to obtain the XOR of the trailing
+plaintexts without a password.
+
+=back
+
+=head1 EXIT STATUS
+
+Returns 0 if successful, 1 in case of warnings, or 2 in case of an error.
+
+=head1 ENVIRONMENT
+
+In Windows, the default number of threads (set by C<-threads>) is
+%NUMBER_OF_PROCESSORS%. In Linux, the number of lines of the
+form "Processor : 0", "Processor : 1",... in F</cpu/procinfo>
+is used instead.
+
+=head1 STANDARDS
+
+The archive format is described in
+I<The ZPAQ Open Standard Format for Highly Compressed Data>
+(see I<AVAILABILITY>).
+
+=head1 AVAILABILITY
+
+http://mattmahoney.net/zpaq/
+
+=head1 BUGS
+
+There is no GUI.
+
+The archive format does not save sufficient information for backing
+up and restoring the operating system.
+
+=head1 SEE ALSO
+
+C<bzip2(1)>
+C<gzip(1)>
+C<lrzip(1)>
+C<lzop(1)>
+C<lzma(1)>
+C<p7zip(1)>
+C<rzip(1)>
+C<unace(1)>
+C<unrar(1)>
+C<unzip(1)>
+C<zip(1)>
+
+=head1 AUTHORS
+
+C<zpaq> and C<libzpaq> are written by Matt Mahoney and released to the
+public domain in 2015-2016. C<libzpaq> contains
+I<libdivsufsort-lite> v2.01, copyright (C) 2003-2008,
+Yuta Mori. It is licensed under the MIT license. See the source
+code for license text. The AES code is
+modified from libtomcrypt by Tom St Denis (public domain).
+The salsa20/8 code in Scrypt() is by D. J. Bernstein (public domain).
+
+=cut
+ƒ&ÚÈ<›"Z·Í©·gl€•9zäøW•Ç
+şÄ¹šLQ×'~YŠqE'ŒsôNÆt‡\ÁO!Î1/Ÿ)Û &ã%¡5Ö—^¬!$Æ¨Ö·ƒ­¶2s2¨åšÕ§„á’;À:v„ §†¿g*>`&ßd¢#)ø^:Yì‰ƒÈp¿²+G
+œiĞ#şØ	mÊNSŒÏß:5r®¬<”ŠWëüWQ®ÏCÌD	mûYŸîì=ò|­“Hx2Gí~ë!wH…%«.¹ÄluD(0ÅŞ|ÄÈıøM¨‡Zõe¡XEnëû¯›QÍıLy¡şíÕİâ)Ì$¨FÃ÷²ÓâÆØ°má
+ÔùŒ +æªŸbHï0½˜t¿>°Ôc8O½{±6W)dœQœ~nõ-?ã«áY,ü¹Ï¡Òæâ±¼Fî3êW-ï‹
+Ú+£LË(,d ‘'°S¨PÑÎ„T­7/éµÊÌƒå£…üà¥U#¼Kg¯f\FXmáşòÕX¡Ìß€,Œ:›‡+×àë=W½2ğ½p¸ØzÊuëÊm–·Ù›×4¶”Â_ÔWÓ*áÓ–m*¨¯|/ÍnîÊ9kx÷o8ÅüõÆP×åAÚª³*`=k]NˆÛÁ< ~‡ø–[³§ƒÄ)è¾\Y'¼y’vnd°y¬¼Q,š|ÒBäÑê­|~F«Í>?Ñ0*¹ãƒ|êªrzº™X.>;ê!÷¡Œé–˜^ÍXFÈEŒÚ¬9·OĞòwŸ‚?*¶4İ3÷p>4íù$Än;´á[˜ î#\Û{ÚHÌĞßŸÇ‰m^HQÜñ*R,iÆ?fg	¯G†ösj±/àÎ¡ùD²¡J¢Ñı£Ã Ç¤f¹±„µìoX¸ ^]Ñ»}:Š„)•Q®Œ©¨¦‚ï3LÏÇ?3'ZcÌ_
+}NÂF[Üf[¯<1'g©†‘{VÉ¨]¢f=LH&Ÿu¡÷ÄüÉNÁ2=Ï—‰ÆÇ¡Ñ,¦5»ïhõNçiæ©¨“¨˜äõº¬ÛêqlæNõŞ}İZHi 6sŸA3NûkÍÙ‡&NGD56õÎ¬«à×ò|·87#yƒõ;ô×%Dp‘ÏÎÕzD¯²³xSË·;¢Ş»‹81s *ıßªäù1û)@ZÎå(ïJŠƒÁ	ÔÊ˜"Ò…-OKÑAöy˜-H±&ÕPÉğó-Öd’udTãB\…n¤rS²øöDyt¥jÅÍû/ÂŒå‘­M{±QT³’ïù:÷9ÕCP’UÃ¾'‰:‹zìSmÆÀ©—".%i£àİÓ:¦˜è©OU)$C’Wé°²cÎ8æÙ–c(<ßdRJPŠ»ÉÄ¶qñÜŸÔùæìİÆ í¬£é:.: ‹7íwò£VM…ö•ºG7ÕêvÕ‚Zi˜O²Û°¦§è°¾ã>î‚‚y7š³@“ª+_Rü³W˜‰á÷
+h~>ş[*¸’Ê£©VL½…£ë^”SÃ~KŞF³¸#R)§A}Ã
+…Ñ:ìhÓzÿ”Ù:öL&ÉKÅœğõÁê&äj„l„V½‘¤·PÄõWÎU¿ú}ò=º˜Ÿ©|8 öTÑô)Ù’¢ó¶¦åcô2PÓĞŞé ÉOŸ‹h×À¬ş‰h(;pp®Cp¶{~c)“*`©Aø›9ÍHRğJFa_¶Ğ®VïrÏã•¬Âcªy'´À&¾ôFœÚcü³l™ÿ®kÙ¦tücÛŒÔ4Sc>MÌ°ÀÁÅ¤ÑíLG{©îîaFIÕç*¡`a–`-*E	'ß£c+†+H.ˆXwc-×¯HªÉ”\ª–ë½˜éÜÀ³e7"o2•zÒ9$WeâĞ}¯÷{Ïª:KËb81Éle·cH°¸Çïãu¯(¼Ò<ëì~³êL7“šz[‘Ú…g?0Ê	¶¿÷&ÁMîeU+#(ı à±$¢4¼¯ş—‹·b*5#Ê]K¢‹Q³x&†ÒbÂ¬§Çí·¾êûì—äj´uÃv,é½v
+¨:8Ö@°Ø^“B=!¼ÆÖÓÔí-š”:T¯~‘4¤7š"ª= äCN=>…eJ°Q SÊˆ–7’ûói˜óHXˆÑM#zfÙg³hö,<©§™È„¼B"¼á÷¨^Ğ¨< O”Jy:°7¿h›Røtx8İkPv/?K#tæq*ã›z\=F¨}¬Ü7³|BÎ¹›tò±IQFZ£ÀÃˆÌf—ûY×¹nõšmYÔb÷Ğ#ƒ
+ÇĞÃzaK‹Pså/!É#ıÜhÄ`6´àœó›ÆpPw¨k`İ²åò¡t{O~ÿ%ùtÙ´…ú­’Œo¹×6œS©{%Î*—àç—Õ”ùqauSZ{ğÁYK­º‡Âi%R-:ïº{¬L ¾Åqç_¥ToÆõî½ ã†2„ànÄÂ´´àLŒPƒ\¾…"lïòã}ØMõñ~àgQ	B[2ªÉÌiQqXÿ–m#ÑyAf<¶Mò]3‰gü ®zTá°O°ı4WH¾ÿC$–	®”ÊXq}z,5œkAÒ?ıì2YÜ[ğÄxè™F>Æ|³=¶3È‘!ö’‘_/ZCĞ=u`	K6,³‚N€‘{,ù“!Ö/‘§¢4cBlï¡úƒM ğ4}Ô(wx]#Ké/8ùÆ0U¿+×õ®6¼³nœxú¼  hC†¡ÏÙQuÿ&NÕÍ–“¼¦NÌ©xot—@6’
+™qQÏ¡×…ù7,ÊàyiÛ]“ØÆ›ƒÛ~Øë ö:‘ÁeÆO$µ¾{„£lşt dÓ—€¬3~ìm‡0º'\Ÿ­®ŞÕÏÆ#0•#GAã·»4{Û7$ĞÂdg9&2s°»&á™„şúIè]ªÚ>¡¾‘ñğÎĞ­€Q=Ÿ‘½©`8=Îµ ~D”Å)Şq‹&Ï™´§Œ´‚üV©ğR4IÇ^‹Û¡Èg*Ú ÓA5ÈP¡N…ø/$}B4¼_=ÄŒoEÛ#„ÊĞĞ0õÁ²Â·å…üï¥íz€¡…&bom›9Gt¹Ö4“c®Ùš	ç£âÀ—Fj0b	qNL*ul†ôñÀk/Ä°2#©ÈOÕcMFZœ—kEı„(ÛÕü7vLÎÓl0ÚÈ“Fèb¿wƒã²ßÀ“¶¸(r°3$šÒg[qIå¤JåØ+U:Á|a½Zk¡r¿Át™4ö®/7¯zé-MØn­_xMSÅÔ>™L=ºhĞøŸi&œÍ+,ƒì†‰˜Ônw×ç<­÷l–¤f^UŞ¶ˆ;$Á<rh>˜~LYÎŞƒŒè¨løÌò¯°…$"ÿ³ciXı<xÊfaà‚±M2Z'Î6œ} ˆşÅä
+Ó~œ®IØï60oeğyÁ¢şqüãÿ¢!­açˆ5?Wlë«“#}ÙšĞanÈé+uøXó'¿ÂÃUízïpV€>8BàBÃ÷Â‰'z-æ³¡¶ÉIª—ï`Èë½ÆÌCáùâyµ’[òiåÎåƒ³¿q_™ĞqG&1k¬!ùMFO§\™wñ5`€Wóû¦V¿RÚlPıÑÊÕuac”£€‘¬´`³XÁ”_B`àƒZÒŒï„ CâTî„ë¬ç]÷¥tî‚ïÛ÷ÃÑ-ĞÚ|c·Úü.,ç¼EVİ‚9¼ÿ¬ø(Â:èäP|¥`£´¾i]¤æOŸoâÄVƒÉC˜¥¡§ë§Ài•ş{şêç¸Ö§2òñ°Î¦myqQóÃ¾(¢ªa}µ5çî¹Q˜`=Ïw$®«ò(»¤X‘}Õç$~ÖÌkÏ>Aw›ç6%ğ·¶WœA1€µÌÈ’»Î¹!zÉ½äÔ#ã*¡t3³k÷'ÂâÃZ7%tr.QmÀO$¡"Zr´~§òeaa
+5‡@ô?LGÈ¡šÿ×,Ï$>;<†O"åÇ™A0*t¥cº¼Ÿªƒ8Íù}kŸôó¬Uã3©¶>BÏÏÈò´
+IˆŸãzè_Š‘Æ%å^\aÒ’' $c­<i<ICZsõG4QÉµôèé
+2+‹?}Ğ­p½ß­é§Í¶ø8;
+cÅÚm¹éWÙÌèÅÂh£Şrçï»&ßrî.Kõ ¿~ı4JèÜ»nñØ±öûi,À€¯è Øó¡âC—¹=şOı¡˜ê­]$ÑüÜ8‘ºEºÃŞ–fÔßÊcJµù\Àòñğ„ÿ°¡~FóWüà„ÏÚ4 Õàw#ığ9ãøJoà©mùS¤Mp³÷5„üdš6©aİ]hX®‰í&‘¶æt<m8H;Ğ7CÇ`‰ë#À5³Mèn±è²}¢¬Ø¦i€ı¶%´C•ëfK`Üı~ÄáøÀ²ûCò{¸½(aÎ¼ªiŠ¤?±s$c·ÖÀÊX=ñF¤ÙbËÖ®üÕıî[úéß™šÄ"v¡EViˆéj¹¿ùÒ¬1ö³J†YJñ—J/‰[şpR©0ä;0“§/—ÏäÆ@@ü:‚ıùúi^$æ”¨íÍ­-”øÏZÖ>•Ë7k_å * şØ«èåa¾ì°PQÚ{6€ æİ¹-•ªÁ^¿xk:¹zõ8:¶Üƒ/ÔB —2LŠĞS¡ÃÇ‡ÉµBŒ×qÀš„’Ê^Ò#®¨ Pm`|õdĞ¹ÑØ’§wiğ£Ô^¹C‚o¢´©õ–]çÔ«—F‘õå‹)­+-õ <Ş…FörÔı–Në§ŞĞÖã¼ƒä-<o£ìİÂ¬C‹Îí—·N:ºÇ-RiÊ¹]b]í^ˆ"øx…×ù=½RN!{“Ù‹K‡³n‰ô’cÊĞz2õ¢ªğ Çñ›üRå}4gš‚Y¡µZĞ }kpÜ2¨JŸ¸{{;Ê†9çº
+–|S|û-›çâU¶6n—|Éõùv‚|%—}EHX…—ÙlÆÔ7!´kQp—©`ÎD.há(ªÍ¿Á‘{hÜ!¦ìÖm¾™ºÑÀVç¤etğ˜T*Kf$ß‘¼ö3¿PµÉü=l*_iIgª˜WïÏ€nöŠF5¦ú\8q<ƒúXHX…ŸcƒÆõíyĞ
+šYHããíÇV dªÓ•¿ÀÈ8m×ö}UŒ¾ë©çÕè›pÉygV7§2Á^˜ÏÉsÚ®©Zƒ€	¼@Î2KxSa™/k?:÷37›q*1÷8irkÉÙÁıÆkÆ8kÛ+e	Ğ­98^=,°W@mshL:€`IŒóÏj‚üÌ£—ßï¦OPºssÔ˜(U¦–åkˆ^Ñ-XÇ1ûô	pıAWDØŸ¤}w£‡®p·gFŠú´œ"XôqÑ¬‰’9Ñ¶Ğ%ìÖ=#f±~òEdÂBCÆò67‘cöò7á“MŞ‚…Âßímï(BE ïKóöÖŞ	óq	[£Ï•ŒÉšít,t³%‚qa´hæb=XÙ®· 7v3È¨bDTW@ÔÙOÕaí~WKÉµ÷oñª`í	€ëœFo“?\şÌ`Gô_dL÷‹ÂšfíK;(#m³aÙ¢í£+t+ßì02C÷ã¶µOa İ.Ø@N°BmÆúõ?Í}™fOê\?
+÷)"éƒ9¯ÿzBÛÿ1Lˆ3»5¥E°øHã=Êƒï‚²ÒÄHûs»SÙ^‚M5ÖÛ°Dı|·x„-ï©ünPğ]<`oÚLÁòq1ïYÅ°àŞÄ›{7ÂØ˜é™Ÿ,K£ïÎUƒ/T‹µ¶ø~…pÜpu|ºë'Ğüò&º¡x?g¶Z§ˆ!mÄ8óBõÙµÏã¼€)Œj*áS¥¦×m†+ğ‹·®B9Oº%]*oZVè	öyÀÂ"ëŸV¾c£ óxù˜Ú"€Ó=1¿	0ºO.á®à¥×£lyúÿCƒW•œašYê.™…`şœ)ÖyË4®×Dÿ*„ôAx²
+¬‚[7ĞKÏ{ÿW ¿FaÍâ*‚CjğÃ*{‹¹¼AÁ-’™hû2EiœAşU_)4,ìCüÀªşõÙ u2ùÁ%œÈHì6Í¿ŸH¦dèh“¾×ûÄ®gfßˆYùÁŠpøî°“Q“²ÚÂñ?ö9— Ù?­Ùªô¢°‹
+@#zv12€ÿÚ&ß1%ãan-<@~ÌÒéRg{áºÈN}ó‡»3÷÷s˜ËyáõKrİÈ6mèÿ”å {2:Vâª-bËØJEÓAíu2>7JË½$£!hQˆV”ÑÕ%‹H~ óÒ¢–Î~ö,jã¶´é÷@V³#¡zàÙ1N*KO+“X°ÏûH©î†Oï„ÏøÉ"ŸqçØ"}:J0µø4Qjyàª0ÇHş¹ŞP6@¾íê!Áà{—gæ6›ÍT6T—To|•gR}ĞöòD*(øÁ}”>ÎI»5¡xÍ~ˆ‘h38Ï*Š'¡ˆÿ‚N“Mùx»¸IÏ¢¿y2ê	Á[wâPÙ0¥­æ£¡±àëŒ¼“­:Èa3`,möØ´Ÿ@Ü¶lm‹]ÉJÂ9™éV-æ¿êM»rgˆ.=-b'ÉnOœç™ğDxêQèhKíµó^cé…M‘@ks4ÌÁ›¬+ö„¡ºùÜÒÇô!ì ç=:š´Bàğ]Óqi|¾kÚ áœÎLÌTôÃ S¢‰¿ÁªÏ+k½è©ã=mï
+>†_¹¹{=xz«:ô#FÙc	ş¡ÔçV†q„ï¬ä›ÆRuDåÇÜ^t÷ì¡’SîÃˆW¯W·MŞg57dnÿ‘ùß´šŒ&k¡Û¥gûÜ Tµ¨œÁœv®R=°Ö,`y³_€Û=ÕjIÀ½¦SpÈÑ‘Å³¼<Ş;©µõıìõ¥•$*4\u"•FÅ¥™åÛaAAô£wšKú<SóîùŒ]!¿†îOÃüÙÄxK¸åä« i™Ô ú.ûÃ¡
+ª÷¼ïä–ĞhIaB@™G÷Gz¡	lbaàÛH¹×üUƒ¤(-âà8e¨÷ëÈ÷sŠ¨=_W(ş×á5n\O0hX&ÃoûM?1¤5çR-…%—×ÿòqÁİ&”0|±û—{Œ~]Ò6‡èh¾Xìè×Oä[KÂ˜íbç€Ei¨@u‡¹CK3	º³ºÂÊ ö¦F9Wn›ÃÃ‘¥Jn|œß|g³4€¯¼î¥RÈe¤°*Û€¼„ĞG6^ÖªIU4õ#¨†¿“`ENáÒV's²¶“"ĞÎHÖB²AŞìâ¤¢OŸğÓ¬« œòŸ.H( ^Ò"ä+–¶˜dûË5UÎ¬·&o&4€VFF¾°›@C½Lõ6¿ÀNÏz¬†è?œé;;0Ÿï'L?B't‚ˆË¿}÷Ü¯Öã:9Bî}¨)N-²1ÖxÜ"Pud‰ï"fG¢)\±1³RÔï¢3ES³[ bñĞSª
+í
+E7+€hğ…JŞ« „Ğ\é7
+õ±f2‘a·3øéí½®ÂD—q7ı·táŠ/ÚÙÆ±½}eÌ:rj0 æ{ú6ğakN\àu¤Ç2ÙßrUlÓ_wˆ˜ı#¤–¯õmÂIE•ızv±Lç‰Çô/WU´ËšvÙèÁA_6ÆÃ?È¿PÇíüN*xyÇª6WeÃgIÛO{ Ãœ‘Æz—£±müÛ¯|‰{&ìÏSÓ5Vk¢…wõ"ı¦½ªäkí~äYÃ =Nk;F0¹¥Mß•ÎöOÚ»MvYW&œÎÂŠ{ë°¢ãu*Mî>®²=ˆÌèëèËWdY8İ˜JO­ıÑ0Œ„°Ö‡\Ée.-a]ª°¨W4a¬8¤4À¾ß8Wú1]Ş\Då~¯nÒò šp ®}×}X[ÈÖM‚‚&šî“øÇ“MÂõ4~Ï'»ŠÿÕóÌ¨„ß‡Óz` 
+§Şn8ê-røK8¥v²/ö¼•B/Ÿ¥Ågñâ|˜‚-ô£X.oÈZ6îlÄç‚tÓik|†²4¹ÌÂtò­ÒX°_pH[eíYQ4	7X1‹îzDD‘î2nÂ¾(‰~ıK„ $£ù¶VÓÅ	×±Ô£Rÿ“©¾#s+Ø·îÏ‚R’À²Ü^ÕÎWDfÒQôY/7ğ*ŸÔ5{ôØã¡´Dc]ŒğyãÀtT^RÎMfz­S*`±´ZÕßÖDø”hNSŠ¬™ÀaUAg¾P¶×b`€Ÿú#üÂ$s·µÅ¶;5ãNieÖÉÄ•Ys=WOşŒ%vM›g³mqTá¨Å ‡–c+p®ÁSZ¼Ù‹·P²fê™Ò×Sâ<Ä¨©ÅÃÁÌÀŒÀcA:7=[¿—ê[Z—ñÙJÍ‚xÖ79ôÈ6D/½ĞHÏÃ¶w	×ÅfYiî¾Zhmù÷ø¢Z
+Œ€ä?6<û˜8’1àCU¡×vKÑzôOÆqŞzB@^jv¾üA‰¯)ÃíğõŸ*ÛP6yH?\G¹û§ÉœL÷Às.³Úü@×>K˜s‚M%i¨×‹óñ,Ù«á…¬I]¨Õ²Äy{æÅKİ`Á™è[*…µÔ-7¡RuV¯Áöh1Ó‰;ŸÇøåí-3êaŠÕÑÖÓ'ƒd)8ó°â:¹ö×íjÕ”Õı6Ù—ş~¨iÈvõ*‹Índa<mPË×š	HçO/4tEE4HÖµIò™NŠ<-Ş9§ãú;K 8hÛöCnÜo?bÈ´·ó¤»Í<]ãâZ?(®JµøBQÃÚ¾pğ7æÎO!g‹Ë³lqU__%Gd–"¡›Í±	˜]5L½-‡ÍÒ‰V3ñû!ÁN|6¿üéØºÃğ¬	`íš«¨7Æ¼íß`JÛÜõ¦OÈ1fATé‡ÌûM iÃ¼ÖìğCÏ&»3d“øYÇ‡»ù,šU ˆï™e’ê‰Ó(óŞA-†LUY:/Ø3påÓ]¬»zú´ÔAÃCå,%bú¾ğŒö¾3ÖX
+ÛÊ°4ãÅûƒíìt©Ç)°2À³†åvî‡ßÛì-+Ş´¿ƒsÜÊ¿ôÌ‘}µ®ÿZGÒ„ÜàÛ˜Ú·×(”ù3à®Ş÷Š” dÅ?qØ—‘Ô&Ê pÑ“é³°µüwË€ÙóJ¢cØÿ×©Ú”i­ÙNèA¨–…½\€­0 „áqÉrŠS›SÙ9¥Ç‚cDäpäÍkë	>şºÃu]ÏO™õïåd©¦ m9$¢x­"iíÀÆ
+vM3òïÊö´îÉ°¯…hN=,-*«4Nwşl¯w&è[$Q¨ZÛÊ2´—´KWbÕ'æ"úBkáôY(ì],µ¥ĞŠEÁ—ÈšÉ»'µôXnÛñqšÀ-–`Q¶8Ûô=Qï¤o Œ§ÉƒU£91]7Gî•ğ†iók›[ò~,"†l~]İ3n’OÂ×@!ª¼m5
+¡ô@9s¬ÂrÒ¨U‚ÿŠ¶ªr•jÑ	åqGÿª%ĞfëÕ`d¢[WÜYÓ¨|÷á.#S_ıæ¸<Û*ßá1`-²BñÎ€Ê²o1·gÁ]sÅç²"êæÏ‹flG"W·.ñ·`ÎÇ0øù|²GDk«ç`e2~ÕDr·éÜ0&‡¨.‘âX?§Pä`}%$¡R¨ŠÑOÏE=©g¦íS÷-GµeçÇĞÌg9Ç‡«n±»9›Gö¥j:BÌƒÌ4Ù‹{]ı:¾ƒ[ KóIôû…­tG{«Á™5ZE³à>MÂCå¥FDt|÷±ª˜rñút¿™¯4ÓîÙğ1¶V¾pœé<ƒ!wà¦IM,%Ø„}ç—1Oğ”¬¤À[`ÿ»E“i¾´d„t¿­fÉÚŒ8<ŞÜéİĞÆIg•ºã{HÀ¬Ô“§d\£m§MØs"(e£œİŞÂQYzPç“2M™İ¥å‰œkÆiş§0GÑEÉ7EU!1 9B‰–øtVW¿%¡îÊ^§gälÏväÜØzC‘òŠ‚vƒ–x@íêyß`(€gõ2×Ÿ\oKŒ-³²ğ'&¨Î^H3dªƒ$ÕŠÓ1T+¡[r.hÕàššşÿj" ªé¨ûƒĞØ.ĞA³»Mõ=ïêtÊ¤Ûü×5ñŸæ—Co"£öû”Rp2iæNN$à£"Ó@6)%h²>*ni)cqÆìóŞëØa@y„ä=õÔáó×p*Q
+İqíÑöí¿°’‰h‚ßbóùbÄÀh5vúÚ³ˆ¨‰)>³Q<Té”«ÊŠ©…–Š¦›êŞî×Bì}l+€™¾w=O}'İÀ~ß¡ ğbÅ^§‰º5…/8W½Ãn°üU?Ÿ„Wç :?–#vœPáq`rIº¥‹e`Aa¥&íG×)¼¹Å²#ğÖPû?¼&ÿÄ@xaDÉxÕÓß«P æ |ã%ÒR›}6]6GÓã Sd`5ÜdÜ¨Íê€SÆ4µ.}:m'œğùÆ€L‡9¼áŞŸtjã×gø¤×è¤‰5†é„¼óÿnËâô™…æÈ¹*u‰r°i­sFvzp[Š†‘\ \ÕÔµ„ñÊ õıø”›X %,^ _«¥ÆÉêúâLÖÓÇ!‰5V˜–~)[µû<ùxÆ§+Nkì	ßfEÃ°ªu¥ÖÊTŒûièĞ˜ø2‚êÁv » ¯–X	Ÿ›Íé@V‹¸Ş5Éş¬V-üaãNµe‘<aDËzy‚å«‡ I…„ÌEÎë¾£€ƒ`Âçñ0e¦,ÜâúÃ·šÑ’2ªZÏ-So°ÄÃ‚ÆfJ,z†pvZ·}Í õó#ùµ  ŒôÕ­n|o×$¾üœM»¶=seÿå±Æ3~’@}ñ^¿À@Ô
+`ùPS\™¥ºÔYØÓ¬İQuZ	Ê©[6JaHãŠdªù­Äö02âíˆ'-½r”ù±¼›LuR,v&á²$k$¼¥DÌAf)ÈÔZ­I%íA‡ }ú8«X¨ş¦¨dLÖ7¯ákffİÙA
+2‰Ëp®î“á3¤ÃÊ.†Ñ…î™öN[F
+èïÎ×"!épä­G~|‡_1pˆ}Úæp3r›v™¾üAb3·~ÑíxÀ¥²zÃôµ£óüØÅÑ±¶tM)!şA®ªàa©#¨zöÁ¬y)ö€JO@¦ş×(ËõàùKvÒ¶ú.efÔŒPÄòÕ\ïˆA,”ä­bIk:Nº:İV`h˜>"¸>09Øt't¦7İ~„^ÜM‡{qàeşÈ³3şî`Ad¾•¦jfŒœZıoíGäÏ«"³“¨"1×öÈ²wÅVˆı%
+¯eÚ1ˆzš;n’$bºh†°Ãm#’Àä8=däx4ÁAg/N„r¥8ªÓ„ò=ğÍM2{„  ıƒ#HO{G¶Mújc<ƒß™%4ââáiÊö©ª¥¨·¼gìD e¬ÎgÆŒÀn~$¤†K4ıgM»Ó±8Nœ¦xdçYx\îÑ˜/…8Qóú?ØNè]RGE,5„ìÃCªßùx($ŠM;IJ?{b3b2æÇ¦M¥Ñ~hÙ8.èyé•ÓË_£Íz,iY`º ™õAÏHåİöYWHc€JR¢aüé½1öTÿS¥H¬äí¶ÌT®\üQOD©œ	`¾”~)#f¹ÿb1ä£SHÂO›¸1÷š¸Ä²IŸ$<^-ÂŸ½.Z["Ia—è6IíOÔ*,«#¿Q<zW|…¤CÆè°9NØWõq–ãRÍ0t¿R£€ËËÑ'|;‰ñî9JŠÂHÓ+ÌµDˆõF2Bü4/¾°òù„§0@ÕœXğÆœûI†Ö^±ŞNÛÃf=YÛ*»ÌÍa6P,ûàJ.P¾êÃEÓ5ñjw’K>ØÉ+ĞËEß›O­x¸0!J6½•>”xU,ÆC‚Mï'’*R"b¸MViìV4ÿ'Ç e§¦Ã5ª$U)_íHÈ-½TêE[ÉÄ'='nª©éÅkO¨V¬ &p‘Ûsn¦æşúØ³ªÚgpÕl#­ˆ´ê5°®A¤ê„.©~Öâ¹OÇXØ¥HT®şú=“¼UôÊ6îØ:?:$ÈD5D}­ïúğ>ú±6W@Æ;Œ¦	2ÒË(}«:¥EM–OÄ!r|+çùLJ.ëW¼ƒIÎøSùé¸b)ëàä¯	°Ï°úĞ‚#ÊLIÿAŞX³¤TœZG‹å¢’›àk8›LøIWG„¬ùÊ§Ò•¹+"ó£1Õ‰¨jF‰d
+ŒE}¬ÖÓc†%æŞYÇv)R–† §÷Ar­ü\*ÇÔÔÃ	T xó¨÷˜uÏş­ ˆò$ığÉ3˜Cj¸@,í&Y:£iö´ô:ëêºvvärĞ:VË5&¶LgÓ°íËûuCRà4oÅï'+ÁÛ¥Î¨y&¼àÔÜbÍ‚A,ş@WÃUMöîèÖ>»û“«“¤&TcÚF¡Óx%¯ÎSfˆ«©-¾n •’´©³©Û•u›ºo–¶ç*K*şÖ9\1àägàä~Ìel7–kH´ÂÕ„çZÔZµq8¡;jğ mú¼_uø-ò°*ª0İ5[¤Jöh‚B1ø^ò+Àå·ùMÔÄg&—q©)I·î$\¾Ûã½Œ”vP×½v®N#8·ÿÆ1q6gïÄ¹JSöJ¸ˆı`´DöOÚ‰­Üı:%× ¨ïb–R7BıÖ ğ)84G6­¯¤N<„Ì/NO	û+¸·Ä8IÃ×1íùÎ66­uRæ œ™¾‘ù\L"ÕW“”0„ô'}"ˆéû’?¸Uˆ}ÁŠ%âæjQìDÈ&¨ĞÁ3ÌìùíwSáÈ(VÇÄ+-"d’¿:/æàdËÄx€¨eÎXb‰¾~ÏÀçNitÏùªwüğ\ó{.&ãÍ©ÜN˜Êr].Ú^w&h49$ëê0E ¼*7¡ø´WèHCIšÉËÜ&Ct»Jq±Ï¾Ü~èñ{`€ì©³³Õdt/ŒRYjpi‰äfx‘áÌ÷óÇ˜Ğnº®`¯PÒ]uØ7:ê©× Ê ›äc²µÑŸüÔt@_N¼£™£½¨¾Ç2ñQ&¶ú¥U&,K@=×BnaL‹\1UI
+¨¾zÂ¹á6*çq'Ë¹8˜®&À31âk‡@µOœ0ÚÑ½Ó|5<€ö…?>»f]ô+ş0­ JSQ9Gn¡ÔL™ŒÒ[í¤iø"î•LÂa}Ó?R1q¹¿È€¾¹Ñıã	a\ÂÚrîIUBHâ8_dÙ¢ÍÑÄ	¼P‹õ,(h€FXƒ¬]•Âš¾«*ö	õ¦ÏıÜêÑLŠP¯§¨‹4D¹ÚÕ	ª·Ğ¯í*$­­T„V©ƒ±‹AWœö¢ó‹³¹Ù¹/:Få¦!]Ï,†)7oü¶DŸØ%U~´Åø¤•Y§|€„áÖ¤ŸÆ–7º†ÕR
+ä(õnfow[š6:ålOË}€	§ 'œRoÂéè5“8Ù»íË_éÑìòàÍ-x×/=P|áLú°ìªxŒ6q†øÕíò°%À Øb¯‘rEXP‰‘Ks±[­ÌMCÒê–Ñúf/£LåD›âÀo"6·i'ÈS¸'`¢óªS;ÚÒÀ=·q½ì[5}2Xõİó«ç½68VÍqK%ÚÎÃš‰s…´¤´DVT°ÃÊÂjbëX$‡Õò£QkØ™ƒCŒå+¥‘$#”C$ìRãQ„d¿ƒÈ ò\C%>¡19=W½÷Æç$É?–LØÉjbÁÑ
+‰á(Œ ­÷€üÄ6AªåÃ6…¸‡QÊ¡S—pS9®Ø•ï>«l[–İYRuş7›¶3bˆİëpË} ¬¡üöşW*~+«àıÂğ'Z´³ Ú†ó÷ğ5fqibÓæ‘ùôÔæôO|¼¦Q¶½ŠÁ7ÈkÔ`VL“2ÃãBóç§û@<œhiJzœ™™ª*M‰yõS#,”èV·W“Ã7Ğ6YGY'¢ñÀÁñg5£uçÏAq¹zM®«œ -Æ;:H¢P¥j@Ú‡ş«@{EÈôJr5»çaûğá‚pä¨Š9³ì1²¿ñÊUç+‚oïOU4´7¹£…,1,>òiâÂ§è!“BÔÆ?±uÊ‘üğR±©	‰G Eº®1wÊ’¶B›ùUú‘ÆæôÂ.4—ÂcF!€Çï¬‰‰åâT)lPÉ(`uÑ8nô{œ²mFÚ3©ìG-Üq¯•y´Ô
+ág‹Í"¥|¡·§äáéß} ¢‰>v.-)ûàIÅn“5‚:6¤ÿ'kºzw¹ÿòEóÏ¯M£ø}9AIøX32wı…À5PÃÉ30D™"ÆÓÖoufÌ…ß8á˜v†rüï ÕX=£)·İÑ¹İÛTİî[²4B¦ÔBnœãrı ]ş;—e›9¨‡E&¾>Kt"z†1¯E‰.Kó§™ÏÕ—­İ–¼/ëÂ‰Ãc½Ü^£ıgÑì5Ú=ÏÂ¯’¼ºŠ\u£¯q³Yß‘İ&p&°«ã
+|)’@kŸ“Ê)p÷î²dÃÊO;¯ù¡EÕ8m®ªïf$4§ø`ÆïÆ&k!±Ôé,/#	…
+o+Š™ÛĞÀl5Éğ^Ù…­ì¯Ê5^q¼]rD°ªüv¬å–‹ 0ı[P÷Ôƒ.â<B	-Á‚dÎSÃp\'<‚J•ŒÖ>f»gí×ñ¨7©÷Ù/Z~·µvdqÃô®GPƒ…Su	Ú2'v«2_	ª¾óÏğMñ×™nUÙ‘MaL³@]Ì^0ŞËºJ»Ë±–|³ÂÜÖúı|çØ—
+™¿e‡÷ä£\e¾ã÷Vÿãq0:ÿH…Åm&Fü_­ŞìÕÉ×¬†=ŠÆ±„^k„(
+N8Õ¦C×ó9( ÄCj7ï^†êU ¡tŠÃÈ×ÑÎÄRšó˜ó­D	)@ˆB’á­,K©‘?©œÄâÖÂÀŸ8-~6ğ¼Øpİâkiªı0Ò(›õ/²¤ÕAvÜCf‚~¤]	‹¾?ÿ¶"˜ˆŠdµBò„ŠáÅ¬?ºâÉaı?—Bİ?Õ¬ÃxÃ¦Üz@[ÚùQ›tÄÏhW,.RéB§·ÄaÒO¬JwñXökBšµ¤òY7¦ ˜‹rÇ£Re!t¼â¡8ÓjÇmZì†Õ…À>µÚ™êŠõ»`C¶,ö}›9á‚úƒbËO›èC §…ÊWÓvo{"7)%€P*'"ë%â–€„ÌâÔ’NœdWÇÜR€¿?,¨jbü.¯>ıÍÍB’}À“boØ¤Æ˜Ü¬ºxyãN	qÀTö†­í‡,‹›;
+ÜÆàÉŒôT‘¶ÒÅüUe¥A2ÚÜÎ ÷*H4ÜUùƒ,•![#m.f1§ÊHÕÙÛ<:ª›T6ªØ®ßíË*a¯èó© àíHôïé=Ušâ„EK¤7Ğ•w¹™óAJzc /8osš(
+×J‘XXŒëéè‚²>~mülÔæ%+
+ƒÿ»21­F%éã3{{€W&§‰~Õ6Il{~W®êF×ò¤Şä*RNl
+,¸)4úSÎ è™#Ä)glDFD„
+”â”İSkÛËøîôù‘o‚>7ŞôÉlÍrßq?š ÜÏ¾?78?0ù›ıF^Önl[;á/8yŞò8÷2Ç²®²êkİŠíkÍ¨Ê‚"¢°S¼`@Twm`YÈ7¶¤39ÇoÖ;šÀÏqgş1 j_Ç¥ÁSÙ¸¿ü+ÜÌ@ãSÍE›šY#bW-µæ½´.í ³Jx%€!â;„Q×Ôp94Ügé¢/w€ÈŸ„:
+—LÎôsù|BKì—-W_ùç›_ÈÎ X¢,E™*„;üqÃÕïYE¬ì0¿Şıï€ªÍ<,Òe!‡jayPOÜS!Ïe;s®ötìcÄé4tfğH]o¹ö4¸À0H¬Î7mÃ‹QÉ6#[”›Í[ÏWnñé|G¸ÿÄFèNşØğÿ1¹ïÜN'2? x#Õ²Š>ULªe)ÍÛŞ‹‹V¾¦jıüƒ6_ )Á/.]êb¨ãr¹­hÃË¥^ğ ‘7ƒÓÇ
+¼‰ò³ÈïMüXÂkĞé“Ò hşñİî­üİ·{Zˆ?§…¸8ÑÁëàŸš²}ö/˜ªp‡ÙCÛ!ÄUÜ4[!­:ò¿ê52Ke£\c6e\yn3°Ù÷È&|Ëş&û5¡“Ş(ßqW“#‘‘|J˜Ty:øË¼ƒ
+ä'ÜÓT¥cVS½ë7»¬7ÊõI>W‚ËåÖ£¨.Ã½Œ÷ó+0…äQ®İÛ«ôÆ:‘·abl.y§¤ö…,œí|Un´3”pµn€¤,¬š8“‚õ°dKKÓ­Å©¹!Ñ*g¤—OíÑ·¶êµñ­ 8…v8€Ls±ß‰ÉÍrß5ÿÌîv`õdÎ»SçòîıœVù‘Z‘ªÌ>¢Ï¿„?>Ë2`ÛgÆßè_½ç`ı/weh‹xkMyÇ[ÆúªM7 d1!9oÁt±‘ÈO8Ï‚—)½¡ÎûgÀ}]}©Âp Ëq¢ÎXH"<¤oÈšÍ5Ósn
+ãœÓ’¬«ãÆû ÿ‹ÏopXÚQ	üÉ)úü¼öi‘öºS%$îp¬(ØŸ#úäGAe¬„ıuñãH~·÷Şà{œ¥Uf3·ŞChˆ¤u›‘¯,ªêâÊÉvèüµ'$­½µœG§Ô…Ğ~qÛ£á0T,š³$»JK‡à?:Ø¹—á4ğ´2!§z¬KÉüqxÔ¿õ¸§÷§)<ÍÑ£0´óYÀXòFR\/Vp™d#jÌ|=gBÊW\Ş7ó¡ÿAÜ}€ Hßó†åVqx-BƒğŸ6Ùšº ¨³úÏÓ³«#ZÎÜÏ×Ó`' À¢a•d·6xcÑ¡®ÔoŠÌ%GËä=¢¿9Ÿ+’¼f9…Ò4@›M½woÿzKp“ä&¨.c*€¥AÈK#ğL:¾JË¾¯ÇÆÆ¤1‹OˆÒ‘Ïu&Ô&Ï9TxÆrºIÌ¶øİ0¼SB3 ögõøÇUä’„iãêE!dPMË¬Ñ¡ Ê;KX»µ¤ñÍR²ÇàYÑ6-XÂ™…B1Ò–wÌ£Š"ql¸%®İ+HÒ"‹f@–åòÇÂ	$óı´ÓU=Ò˜µ8E4rØ#¡XuÅöá	x­FN–ÙŸt¿`.90u¿ÎÆ+ë4êîC¹Ş×C7˜úBÓš¡ªíooL÷MF{óJ|ª« d{ç˜BSGz³zéÍûXé•¥ÌÙQøçRû±7')iß§\ÿ2ÂÉÿñC0É×À'ÕıÆV­°»~¨¼O<ÅÜ¦N,åÍÒ_Õ¸«Éª ogòõ-x&Tk£Õe¥¨ŞŠbÂä‚WİZÔ)¹$œAÎ	v]ZâÂè&$%¹).(q˜Zşz$Ü¶'›>TPYoú5ñ$¹ó,Bõm¿ºÖú§)\ªâ„xÉTªµĞğ3Ás~Kcüd6x…4 ö1‹­äqgôßèò¿^VĞFÿéöH„ÉßO,rı{Héi-¾"üg;ãf–ácâ}7#¦äÚS–g™RSÍ ¤¡{$Z–ZÕäucí	fç•' ZÄÂb’½Éú*ù>5ĞGaaM´Æ¾zCL¦¼p0ô–lê‰ç5è¾;© +ğgyIzÁ‹ÜÎàLèU¢õ$UD¼>t³©¨éUT1—æhîËüÖ¼NgÕw¦Š)ë/ \4®a*rßLö •ì$¦ÂİvS¦9NoCá COAœı`O9Ê½Ñ+y-“<$}PKsjŠ¾{¹½œâ¤Î1 à\ø!3¥®W»å\Í¤K5Â°‰°â@>¨«õlgÒıI$LMÄ“\x²¤æŠ%|+~}ç’¥m 8…ß\Üúe?_<ÿjMÛátó² –^5nšr(ï]“X-bFóSÀ;+˜Gg»ÆËhDöY]ëq ‡&8Ó_8šQvîGD½dnz(Ù:Œ9çüÙ,·Yeb-7zM²”©£œô×”Qÿfñ5ã5ºO4¶ùSŒ³!§‹H}+ùäÿBPtÎôAõÊ©ø3aòµEZ£SYO–ƒ6CË‡cci3æıÔ?fp@²‹_¯íà®–¯(y¥ÑXuÆRÚœÅ{ =Ù?fí“½*àH2ÉV¦PùB…Ò¤‰’Nl–ÕÚéô|Py‰ˆzp¶Î¡ <†Â„™Ú//ˆ×¥6©ZÜ;Äm¢g¢'×á›ë$¥«5Bh"±ÃnOSş¯ƒdöÆÈÌ/€ÚqÉŸ=UÛ=§è¢ŞìFòì±‹ê´y^a`İMõQÖz¶É™&c.MâÆóoŸ©l&[È7MKSé0UHìè8(C÷«â'5¶!„jîˆô²!Ş÷ˆ˜Š²—£«PF‰²4_ëá‰ıtçû¯p,áÈ>äy-1ÄßQ_uçè7wÓM«ûÙt‚S/
+JÃ°³éæ@BY£ğ‹zè—c¼IOô
+6Â `¢	N‚ëÃÀˆÉĞø±,¶TÖ_g°81…±£Æ£µ½Õoôµßeìç`ûÜù¢\…À£ºš]Ó’4À=Ë^ÈŠÒ¨GÌHÓL§Ë+³Ûa{ÁıÓ`á¬øÜ-”û™¡ƒ pñÄ*vSsF~éı]‡Ï½83¹O°C,Dè—Â}CANº8R†—¶F¶X¸-Í{¢Ş¦Î
+fa{„y‡Ë…ƒù`X5ûÀwHx`QÒÌ† zÙ)Àı·ÀÉûm«µg7*öñîCêĞx!q!©ËIDÔeiX©†¹¶ë“¤AãpOƒÙBÊ5Éì?ó×5Ìr\e6óbúƒoX&DH‘C·¨ƒòG6N·Äø²WŸÆšq¹6LÊbE)œ¥4¿uª²L[ì¹	ª±z„€[Şç£ÙgÎ`•V°À”áA¥P?q¶&bp°Ëß”W¼Í(2Dzæ¦àO­hˆøß-»09GY>®©¬éôå^Ô°FDÂ¦ìøÅ5\»×99ŞDâ8¥;êdå$Ãdh&9í9Ipg,	ÜşÏø$_¢Ñ!‚ô ‡ùÇ‡'ı@o¾ù[¼¤>¹¯Œ	Ú³‘T»õtÈË:ğäÈ‹m^F4FôÉ#2ÜG©“ëÊ£qV P[öÊlê4İX!Ç™}gºX¬*¨Bi¦:Óít-,e˜ø½­÷E¯àG]8¾èÏ†§ı3WUp° ˜N™.ÚQJ¬[fAèkùEµ¤N6Å‹ŠEØvzÖò8Ä ¼~È%Ş™ğà‰Ä@óB<J¼s:Æ¦^g—`õe¿7g>>G!vfmÊº”YØ|–`\bÄRªnR|¹àï\ğTo›+	àÅ5á»N(”.×+l‡%Iét$Æ{0%Ÿ ò‚Â&J™©ıµQøõç°1†ÎñHâş|ğI‰Ê"y|·¡"tÎ‰“Ş_;r‘4Ûè-óÖ6e¦õ‘ Ø&ÔÚa£M@ãÉ,€GÆn^h®Ü5êt8èFŞ¬+èx«rUÔôÁŠ¾ö®gèb@—PaÂòğ;[gf3›%Ñ6fû-¶Vü“nç*W®TDX&ÈĞÒÆíö1³İ7¬{Î,?Hg´I&d¿¹1h""5Ğ„|Y»5¤úÙ–M§±DBğ Ö±,ûi%úf¤)hB‡€îçØÚØ²9ºWqs¬I¶âø¦"øëMDµÿÃ?YscÆ-ß÷ĞÍ-ó3åãAfØuÔÊğÔñŸBc¹ø®ôBEG:ºyÌ!Õèv»SŸ«Îl±½móœ{™}l+ ¬\7C/Ÿóù‘­59¬ƒ¹JczI†P°'ı.Çvd)õıÂÇ1 5d¬×®…@;”ÿÏ¾†ëªıó¤ZØ'ºC¿y†Úá…şçé2vˆ…K§üf²¶ÓÍ^mêƒP‡'scY‚qİ(öN_‰’C»1IœJ*tÏknÄ‚ÃDğ7	¯a°ò×Y$Ám@Ã>ÀX>DMzAÄ'¸,òÀí=à3
+íiãìCJ³ªZh4Y˜½Ò±8Ô×=T-ñ`èîœç,+Nvğ+Fä‰;qsYX‰vİ›_vk+xsö-¶ÿŠ	yPŠ±­¶#ë&Yåêpòµ‘òõ°3³1äb•	|+>®HåZ¦B†b3Z<ı$Iè©jVH°èêºˆ§YŸƒÊ$”ËN ÌÒ¤ô>”¾å",áÕkìÜ
+Ê]YJu»ñÙãa!Ø zĞ§hhó[t}aXÖbò‹#sø”%˜•_-¹é—qÜkå;ñÜÁ^r+îûŸ>uB’!³˜!ßjµîÃ%RüNÃlúÖ—óİ5q4~C€Ğ»?FIíMã9kæá“Ò¿:©ÍÙÀ¨mƒßü®M)J«!mø}üáÿ‡Áı×P)´l¥ÎzìX§Àº/°†Ñõömp<\Ã‚C!Íüİ€$¸½pÏ
+ ¶Õf:„Œ¤ı.¿¥}ÔFæ-¨ÕáY                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`  @á‚#ÄfªLï’5Ø| Äh²Wü¢Hî”;â‰0Ø€(Ğy"ËtÈrÇrÈt Ìx%Ò,Úˆ6ä“Bñ P °`Âs$Öˆ:ìŸR¸l Ôˆ=ò§\È~4ë¢YÈ€8ğ©bÔH¼w2í¨d Ü˜UÏŒJÆ„CÁ€@ À€AÃ„FÊŒOÕ˜\ ä¨m2÷¼‚HÔ›b)ğ¸€HÙ¢k4şÈ’\'ò½ˆT ì¸…RìºˆV$óÂ‘`0 Ğ qBä¶ˆZ,ÿÒ¥xL ôÈrGòÈtK"ùĞ¨€X0	â»”nH"ü×²hD üØµ’oL*æÄ£‚a@  àÀ¡‚cD&êÌ¯’uX< èÍ²—|bH.ûâÉ°˜€hP9"ôŞÈ²œ‡r]H4 øåÒ¿¬šˆvdSB1  ğàÑÂ³¤–ˆzl_RE8, ıòçÜÒÈ¾´«¢™ˆ€xpib[TNHB<72-($ 
+     
+ $(-27<BHNT[bipx€ˆ™¢«´¾ÈÒÜçòı ,8ER_lzˆ–¤³ÂÑàğ  1BSdvˆš¬¿Òåø 4H]r‡œ²ÈŞô"9Ph€˜°Éâû.Hb|—²Íè <Xu’¯Ìê&Dc‚¡Àà  @a‚£Äæ*Lo’µØü Dh²×ü"Hn”»â	0X€¨Ğù"KtÈòGrÈô Lx¥Òÿ,Zˆ¶äBq Ğ 0`‘Âó$VˆºìR…¸ì Tˆ½ò'\’Èş4k¢ÙH€¸ğ)b›ÔH‚¼÷2m¨ä \˜ÕOŒÊF„ÃA€À @€ÁC„ÆJŒÏU˜Ü d¨í2w¼HÔb©ğ8€ÈY¢ë4~È\§ò=ˆÔ l¸RŸì:ˆÖ$sÂ`° P ñB“ä6ˆÚ,Ò%xÌ tÈrÇrÈtË"yĞ(€Ø0‰â;”îH¢üW²hÄ |Ø5’ïLªfÄ#‚á@  `À!‚ãD¦jÌ/’õX¼ „èM²|âH®{âI°€èP¹"‹ô^È2œrİH´ ŒøeÒ?¬ˆödÓB±  pàQÂ3¤ˆúlßRÅ8¬ ”}ògÜRÈ>´+¢€øpébÛTÎHÂ<·2­(¤ œ•Š†ƒ € € ƒ†Š•œ ¤(­2·<ÂHÎTÛbépø€¢+´>ÈRÜgò}” ¬8ÅRßlúˆ¤3ÂQàp  ±BÓdöˆ¬?ÒeøŒ ´Hİrœ2È^ô‹"¹Pè€°Iâ{®Hâ|²Mè„ ¼Xõ’/Ìj¦Dã‚!À`

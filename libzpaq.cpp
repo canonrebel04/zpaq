@@ -41,6 +41,7 @@ See libzpaq.h for additional documentation.
 #include <string>
 #include <vector>
 #include <stdexcept>
+#include <new>
 #include <stdio.h>
 
 
@@ -55,10 +56,24 @@ See libzpaq.h for additional documentation.
 
 namespace libzpaq {
 
-void error(const char* msg) {
-  fprintf(stderr, "libzpaq error: %s\n", msg);
+// Default error handler. The ZPAQ API says the application defines
+// libzpaq::error(); zpaq.cpp does. This fallback lets libzpaq.cpp be used as
+// a stand-alone library. On GCC/Clang it is a weak symbol, so an application
+// definition overrides it without a duplicate-symbol link error. MSVC has no
+// portable weak symbols, so there it is only compiled with
+// -DLIBZPAQ_DEFAULT_ERROR (do not define that when linking zpaq.cpp).
+#if defined(__GNUC__) || defined(__clang__)
+#define LIBZPAQ_WEAK __attribute__((weak))
+#define LIBZPAQ_DEFAULT_ERROR 1
+#else
+#define LIBZPAQ_WEAK
+#endif
+#ifdef LIBZPAQ_DEFAULT_ERROR
+LIBZPAQ_WEAK void error(const char* msg) {
+  if (strstr(msg, "ut of memory")) throw std::bad_alloc();
   throw std::runtime_error(msg);
 }
+#endif
 
 // Read 16 bit little-endian number
 
@@ -178,8 +193,8 @@ void SHA1::write(const char* buf, int64_t n) {
   for (; n>0; --n) put(*p++);
 }
 
-// Hash 1 block of 64 bytes
-void SHA1::process() {
+// Hash 1 block of 64 bytes (portable version)
+static void sha1_block_scalar(U32* h, U32* w) {
   U32 a=h[0], b=h[1], c=h[2], d=h[3], e=h[4];
   static const U32 k[4]={0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6};
   #define f(a,b,c,d,e,i) \
@@ -196,6 +211,79 @@ void SHA1::process() {
   #undef f
   #undef r
   h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d; h[4]+=e;
+}
+
+// SHA-1 using the x86 SHA extensions (Intel Goldmont+/Ice Lake+, AMD Zen+).
+// Selected at run time with CPUID, so the binary still runs on older CPUs.
+// w[0..15] already holds the big-endian message words.
+#if (defined(__x86_64__) || defined(__i386__)) && \
+    (defined(__GNUC__) || defined(__clang__)) && !defined(LIBZPAQ_NO_SHANI)
+#define LIBZPAQ_SHANI 1
+#include <cpuid.h>
+
+#define SHA1_TARGET __attribute__((target("sha,sse4.1,ssse3")))
+
+template <int g> SHA1_TARGET static inline void sha1_group(
+    __m128i& abcd, __m128i* e, __m128i* m) {
+  __m128i& x=e[g&1];
+  if (g==0) x=_mm_add_epi32(x, m[0]);
+  else x=_mm_sha1nexte_epu32(x, m[g&3]);
+  e[(g+1)&1]=abcd;
+  if (g>=3 && g<=18) m[(g+1)&3]=_mm_sha1msg2_epu32(m[(g+1)&3], m[g&3]);
+  abcd=_mm_sha1rnds4_epu32(abcd, x, g/5);
+  if (g>=1 && g<=16) m[(g-1)&3]=_mm_sha1msg1_epu32(m[(g-1)&3], m[g&3]);
+  if (g>=2 && g<=17) m[(g-2)&3]=_mm_xor_si128(m[(g-2)&3], m[g&3]);
+}
+
+SHA1_TARGET static void sha1_block_shani(U32* h, const U32* w) {
+  __m128i abcd=_mm_set_epi32(h[0], h[1], h[2], h[3]);
+  __m128i e[2], m[4];
+  e[0]=_mm_set_epi32(h[4], 0, 0, 0);
+  e[1]=_mm_setzero_si128();
+  const __m128i abcd0=abcd, e0=e[0];
+  for (int i=0; i<4; ++i)
+    m[i]=_mm_set_epi32(w[4*i], w[4*i+1], w[4*i+2], w[4*i+3]);
+  sha1_group<0>(abcd, e, m);  sha1_group<1>(abcd, e, m);
+  sha1_group<2>(abcd, e, m);  sha1_group<3>(abcd, e, m);
+  sha1_group<4>(abcd, e, m);  sha1_group<5>(abcd, e, m);
+  sha1_group<6>(abcd, e, m);  sha1_group<7>(abcd, e, m);
+  sha1_group<8>(abcd, e, m);  sha1_group<9>(abcd, e, m);
+  sha1_group<10>(abcd, e, m); sha1_group<11>(abcd, e, m);
+  sha1_group<12>(abcd, e, m); sha1_group<13>(abcd, e, m);
+  sha1_group<14>(abcd, e, m); sha1_group<15>(abcd, e, m);
+  sha1_group<16>(abcd, e, m); sha1_group<17>(abcd, e, m);
+  sha1_group<18>(abcd, e, m); sha1_group<19>(abcd, e, m);
+  e[0]=_mm_sha1nexte_epu32(e[0], e0);
+  abcd=_mm_add_epi32(abcd, abcd0);
+  h[0]=_mm_extract_epi32(abcd, 3);
+  h[1]=_mm_extract_epi32(abcd, 2);
+  h[2]=_mm_extract_epi32(abcd, 1);
+  h[3]=_mm_extract_epi32(abcd, 0);
+  h[4]=_mm_extract_epi32(e[0], 3);
+}
+
+static bool sha1_has_shani() {
+  unsigned a, b, c, d;
+  if (!__get_cpuid(1, &a, &b, &c, &d)) return false;
+  if (!(c&(1u<<19)) || !(c&(1u<<9))) return false;  // SSE4.1, SSSE3
+  if (__get_cpuid_max(0, 0)<7) return false;
+  __cpuid_count(7, 0, a, b, c, d);
+  return (b>>29)&1;  // SHA
+}
+static bool sha1_use_shani() {
+  static const bool r=sha1_has_shani() && !getenv("LIBZPAQ_NO_SHANI");
+  return r;
+}
+#endif
+
+void SHA1::process() {
+#ifdef LIBZPAQ_SHANI
+  if (sha1_use_shani()) {
+    sha1_block_shani(h, w);
+    return;
+  }
+#endif
+  sha1_block_scalar(h, w);
 }
 
 //////////////////////////// SHA256 //////////////////////////
@@ -740,7 +828,6 @@ void Component::init() {
   cm.resize(0);
   ht.resize(0);
   a16.resize(0);
-  v.resize(0);
 }
 
 ////////////////////////// StateTable ////////////////////////
@@ -968,6 +1055,7 @@ ZPAQL::ZPAQL() {
   sha1=0;
   rcode=0;
   rcode_size=0;
+  batch[0]=batch[1]=0;
   clear();
   outbuf.resize(1<<14);
   bufptr=0;
@@ -1842,7 +1930,6 @@ void Predictor::init() {
         assert(m>=1);
         cr.c=(size_t(1)<<cp[1]); // size (number of contexts)
         cr.cm.resize(m, cp[1]);  // wt[size][m]
-        cr.v.resize(m, cp[1]);   // v[size][m] momentum velocity
         for (size_t j=0; j<cr.cm.size(); ++j)
           cr.cm[j]=65536/m;
         break;
@@ -2070,48 +2157,27 @@ void Predictor::update0(int y) {
         assert(cr.cxt+m<=cr.cm.size());
         int err=(y*32767-squash(p[i]))*cp[4]>>4;
         int* wt=(int*)&cr.cm[cr.cxt];
-        int* v=(int*)&cr.v[cr.cxt];
         const int* p_src = &p[cp[2]];
         int j=0;
+        // wt[j]=clamp512k(wt[j]+((err*p[j]+(1<<12))>>13)), as in the ZPAQ
+        // spec and the JIT train(). 32-bit wrapping arithmetic is identical
+        // in the vector and scalar paths.
 #if defined(__AVX2__)
         __m256i verr  = _mm256_set1_epi32(err);
         __m256i vbias = _mm256_set1_epi32(1 << 12);
         __m256i vmin  = _mm256_set1_epi32(-524288);
         __m256i vmax  = _mm256_set1_epi32(524287);
-
         for (; j <= m - 8; j += 8) {
           __m256i vp  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_src + j));
           __m256i vwt = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(wt + j));
-          __m256i vv_old = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(v + j));
-
-          // delta = (err * p + 4096) >> 13
           __m256i vdelta = _mm256_srai_epi32(_mm256_add_epi32(_mm256_mullo_epi32(verr, vp), vbias), 13);
-
-          // v_new = (v_old >> 1) + delta
-          __m256i vv_old_half = _mm256_srai_epi32(vv_old, 1);
-          __m256i vv_new = _mm256_add_epi32(vv_old_half, vdelta);
-          _mm256_storeu_si256(reinterpret_cast<__m256i*>(v + j), vv_new);
-
-          // lookahead = v_new + ((v_new - v_old) >> 1)
-          __m256i vdiff = _mm256_sub_epi32(vv_new, vv_old);
-          __m256i vdiff_half = _mm256_srai_epi32(vdiff, 1);
-          __m256i vlookahead = _mm256_add_epi32(vv_new, vdiff_half);
-
-          // wt = clamp512k(wt + lookahead)
-          __m256i vres = _mm256_add_epi32(vwt, vlookahead);
-          __m256i vclamped = _mm256_min_epi32(_mm256_max_epi32(vres, vmin), vmax);
-
-          _mm256_storeu_si256(reinterpret_cast<__m256i*>(wt + j), vclamped);
+          __m256i vres = _mm256_add_epi32(vwt, vdelta);
+          vres = _mm256_min_epi32(_mm256_max_epi32(vres, vmin), vmax);
+          _mm256_storeu_si256(reinterpret_cast<__m256i*>(wt + j), vres);
         }
 #endif
-        for (; j < m; ++j) {
-          int delta = (err * p_src[j] + (1 << 12)) >> 13;
-          int v_old = v[j];
-          int v_new = (v_old >> 1) + delta;
-          v[j] = v_new;
-          int lookahead = v_new + ((v_new - v_old) >> 1);
-          wt[j] = clamp512k(wt[j] + lookahead);
-        }
+        for (; j < m; ++j)
+          wt[j]=clamp512k(wt[j]+((err*p_src[j]+(1<<12))>>13));
       }
         break;
       case ISSE: { // sizebits j  -- c=hi, cxt=bh
@@ -2156,32 +2222,15 @@ void Predictor::update0(int y) {
 size_t Predictor::find(Array<U8>& ht, int sizebits, U32 cxt) {
   assert(initTables);
   assert(ht.size()==size_t(16)<<sizebits);
+  // The index function is part of the ZPAQ format (it must match the JIT
+  // code in assemble_p() and every other decoder), so it must not change.
   int chk=cxt>>sizebits&255;
-#if defined(__VPCLMULQDQ__) || defined(__PCLMUL__)
-  __m128i a = _mm_cvtsi64_si128(static_cast<unsigned long long>(cxt));
-  __m128i k = _mm_cvtsi64_si128(0xbf58476d1ce4e5b9ULL);
-  __m128i clm = _mm_clmulepi64_si128(a, k, 0x00);
-  U64 hash64 = static_cast<U64>(_mm_cvtsi128_si64(clm));
-  size_t h0 = (((hash64) >> 32) * 16) & (ht.size() - 16);
-#else
-  size_t h0=(((cxt * 0xbf58476d1ce4e5b9ULL) >> 32) * 16) & (ht.size() - 16);
-#endif
-
-  size_t h1 = h0 ^ 16;
-  size_t h2 = h0 ^ 32;
-#ifdef _MSC_VER
-  _mm_prefetch(reinterpret_cast<const char*>(&ht[h0]), _MM_HINT_T0);
-  _mm_prefetch(reinterpret_cast<const char*>(&ht[h1]), _MM_HINT_T0);
-#else
-  __builtin_prefetch(&ht[h0], 0, 3);
-  __builtin_prefetch(&ht[h1], 0, 3);
-#endif
-
-
+  size_t h0=(cxt*16)&(ht.size()-16);
+  size_t h1=h0^16;
+  size_t h2=h0^32;
   if (ht[h0]==chk) return h0;
   if (ht[h1]==chk) return h1;
   if (ht[h2]==chk) return h2;
-
   if (ht[h0+1]<=ht[h1+1] && ht[h0+1]<=ht[h2+1])
     return memset(&ht[h0], 0, 16), ht[h0]=chk, h0;
   else if (ht[h1+1]<ht[h2+1])
@@ -2284,6 +2333,16 @@ int Decoder::skip() {
 }
 
 ////////////////////// PostProcessor //////////////////////
+
+// Input n bytes of data after the header (state 1=PASS or 5=PROG loaded).
+// Equivalent to calling write(p[i]) for each i.
+void PostProcessor::write(const U8* p, int n) {
+  assert(state==1 || state==5);
+  if (state==1)
+    for (int i=0; i<n; ++i) z.outc(p[i]);
+  else
+    z.run(p, n);
+}
 
 // Copy ph, pm from block header
 void PostProcessor::init(int h, int m) {
@@ -2432,15 +2491,42 @@ bool Decompresser::decompress(int n) {
   while ((pp.getState()&3)!=1)
     pp.write(dec.decompress());
 
-  // Decompress n bytes, or all if n < 0
+  // Decompress n bytes, or all if n < 0. Bytes are passed to the
+  // postprocessor in batches, which lets the JIT PCOMP code loop over a
+  // buffer instead of being entered once per byte. Stored (unmodeled)
+  // data is passed straight from the input buffer.
+  const bool modeled=dec.isModeled();
+  U8 tmp[4096];
   while (n) {
-    int c=dec.decompress();
-    pp.write(c);
-    if (c==-1) {
+    const int lim=(n<0 || n>int(sizeof(tmp))) ? int(sizeof(tmp)) : n;
+    if (!modeled) {
+      const U8* p=0;
+      const int k=dec.getStored(p, lim);
+      if (k>0) {
+        pp.write(p, k);
+        if (n>0) n-=k;
+        continue;
+      }
+      int c=dec.decompress();
+      if (c==-1) {
+        pp.write(c);
+        state=SEGEND;
+        return false;
+      }
+      tmp[0]=c;
+      pp.write(tmp, 1);
+      if (n>0) --n;
+      continue;
+    }
+    int k=0, c=0;
+    while (k<lim && (c=dec.decompress())>=0) tmp[k++]=c;
+    if (k>0) pp.write(tmp, k);
+    if (n>0) n-=k;
+    if (k<lim) {  // c==-1
+      pp.write(-1);
       state=SEGEND;
       return false;
     }
-    if (n>0) --n;
   }
   return true;
 }
@@ -3348,6 +3434,34 @@ int ZPAQL::assemble() {
   int done=0;  // number of instructions assembled (0..hlen)
   int o=5;  // rcode output index, reserve space for jmp
 
+  // Code for the halt instruction when called by run(in, n): if more
+  // input is in batch[0..1], load the next byte into a and jump back to
+  // the first ZPAQL instruction without saving and restoring registers.
+  const int next=o;
+  int next_fixup=-1;  // where to store rel32 of jmp to the first instruction
+  if (S==8) {
+    put2l(0x48b9, &batch[0]); // mov rcx, &batch
+    put3(0x488b01);           // mov rax, [rcx]
+    put4(0x483b4108);         // cmp rax, [rcx+8]
+    put2(0x730e);             // jae L1
+    put3(0x0fb610);           // movzx edx, byte [rax]
+    put3(0x48ffc0);           // inc rax
+    put3(0x488901);           // mov [rcx], rax
+    put1(0xe9);               // jmp near first instruction
+  }
+  else {
+    put2a(0x8b0d, &batch[0]); // mov ecx, [batch]
+    put2a(0x3b0d, &batch[1]); // cmp ecx, [batch+4]
+    put2(0x730f);             // jae L1
+    put3(0x0fb611);           // movzx edx, byte [ecx]
+    put1(0x41);               // inc ecx
+    put2a(0x890d, &batch[0]); // mov [batch], ecx
+    put1(0xe9);               // jmp near first instruction
+  }
+  next_fixup=o;
+  put4(0);                    // (fixed up at the end)
+  put2(0x31c0);               // L1: xor eax, eax ; return 0
+
   // Code for the halt instruction (restore registers and return)
   const int halt=o;
   if (S==8) {
@@ -3361,6 +3475,8 @@ int ZPAQL::assemble() {
     put2(0x8929);             // mov [rcx], ebp
     put2l(0x48b9, &f);        // mov rcx, f
     put2(0x8919);             // mov [rcx], ebx
+    put2l(0x48b9, &bufptr);   // mov rcx, &bufptr
+    put3(0x448901);           // mov [rcx], r8d
     put4(0x4883c408);         // add rsp, 8
     put2(0x415f);             // pop r15
     put2(0x415e);             // pop r14
@@ -3384,18 +3500,11 @@ int ZPAQL::assemble() {
   // Code for the out instruction.
   // Store a=edx at outbuf[bufptr++]. If full, call flush1().
   const int outlabel=o;
+  // On x86-64 the fast path is inlined at each out instruction with bufptr
+  // kept in r8d, and this code is only called when outbuf is full.
   if (S==8) {
-    put2l(0x48b8, &outbuf[0]);// mov rax, outbuf.p
     put2l(0x49ba, &bufptr);   // mov r10, &bufptr
-    put3(0x418b0a);           // mov rcx, [r10]
-    put3(0x881408);           // mov [rax+rcx], dl
-    put2(0xffc1);             // inc rcx
-    put3(0x41890a);           // mov [r10], ecx
-    put2a(0x81f9, outbuf.size());  // cmp rcx, outbuf.size()
-    put2(0x7403);             // jz L1
-    put2(0x31c0);             // xor eax, eax
-    put1(0xc3);               // ret
-
+    put3(0x458902);           // mov [r10], r8d
     put1(0x55);               // L1: push rbp ; call flush1(this)
     put1(0x57);               // push rdi
     put1(0x56);               // push rsi
@@ -3415,6 +3524,7 @@ int ZPAQL::assemble() {
     put1(0x5e);               // pop rsi
     put1(0x5f);               // pop rdi
     put1(0x5d);               // pop rbp
+    put3(0x4531c0);           // xor r8d, r8d ; bufptr=0 after flush
   }
   else {
     put1a(0xb8, &outbuf[0]);  // mov eax, outbuf.p
@@ -3518,6 +3628,8 @@ int ZPAQL::assemble() {
     put2(0x8b28);      // mov ebp, [rax]
     put2l(0x48b8, &f); // mov rax, f
     put2(0x8b18);      // mov ebx, [rax]
+    put2l(0x48b8, &bufptr); // mov rax, &bufptr
+    put3(0x448b00);    // mov r8d, [rax]
     put2l(0x49bc, &h[0]);   // mov r12, h
     put2l(0x49bd, &outbuf[0]); // mov r13, outbuf.p
     put2l(0x49be, &r[0]);   // mov r14, r
@@ -3702,14 +3814,24 @@ int ZPAQL::assemble() {
           case 7:  // special
             switch(op) {
               case 56: // halt
-                put2(0x31c0);             // xor eax, eax  ; return 0
-                put1a(0xe9, halt-o-4);    // jmp near halt
+                put1a(0xe9, next-o-4);    // jmp near next (or halt)
                 break;
               case 57:  // out
-                put1a(0xe8, outlabel-o-4);// call outlabel
-                put3(0x83f800);           // cmp eax, 0  ; returned error code
-                put2(0x7405);             // je L1:
-                put1a(0xe9, halt-o-4);    // jmp near halt ; L1:
+                if (S==8) {
+                  put4(0x43885405); put1(0x00); // mov [r13+r8], dl
+                  put3(0x41ffc0);           // inc r8d
+                  put3(0x4181f8); puta(outbuf.size()); // cmp r8d, size
+                  put2(0x750e);             // jne L1
+                  put1a(0xe8, outlabel-o-4);// call outlabel ; flush
+                  put3(0x83f800);           // cmp eax, 0 ; error code
+                  put2(0x0f85); puta(halt-o-4); // jne near halt ; L1:
+                }
+                else {
+                  put1a(0xe8, outlabel-o-4);// call outlabel
+                  put3(0x83f800);           // cmp eax, 0  ; returned error code
+                  put2(0x7405);             // je L1:
+                  put1a(0xe9, halt-o-4);    // jmp near halt ; L1:
+                }
                 break;
               case 59:  // hash: a = (a + *b + 512) * 773
                 put3a(0x8d8410, 512);     // lea edx, [eax+edx+512]
@@ -3906,6 +4028,10 @@ int ZPAQL::assemble() {
       else assert(false);  // not a x86 jump
     }
   }
+
+  // Batch loop in next: jump to the first instruction
+  o=next_fixup;
+  put4r(U32(it[0]-(next_fixup+4)));
 
   // Jump to start
   o=0;
@@ -4404,6 +4530,7 @@ int Predictor::assemble_p() {
         // cr.ht[cr.c+(hmap4&15)]=st.next(cr.cxt, y);
 
         // update bit history bh to next(bh,y=ebp) in ht[c+(hmap4&15)]
+        if (off(hmap4)>127) error("JIT: hmap4 offset must fit in disp8");
         put3(0x8b4700+off(hmap4));     // mov eax, [edi+&hmap4]
         put3(0x83e00f);                // and eax, 15
         put2a(0x0387, offc(c));        // add eax [edi+&c] ; cxt
@@ -4750,6 +4877,27 @@ void ZPAQL::run(U32 input) {
   }
   a=input;
   const U32 rc=((int(*)())(&rcode[0]))();
+  if (rc==0) return;
+  else if (rc==1) libzpaq::error("Bad ZPAQL opcode");
+  else if (rc==2) libzpaq::error("Out of memory");
+  else if (rc==3) libzpaq::error("Write error");
+  else libzpaq::error("ZPAQL execution error");
+#endif
+}
+
+// Run once for each byte of in[0..n-1], same as calling run(in[i]).
+void ZPAQL::run(const U8* in, int n) {
+  if (n<=0) return;
+#ifdef NOJIT
+  for (int i=0; i<n; ++i) run0(in[i]);
+#else
+  if (!rcode) run(U32(in[0])), ++in, --n;  // assembles the code
+  if (n<=0) return;
+  batch[0]=in+1;
+  batch[1]=in+n;
+  a=in[0];
+  const U32 rc=((int(*)())(&rcode[0]))();
+  batch[0]=batch[1]=0;
   if (rc==0) return;
   else if (rc==1) libzpaq::error("Bad ZPAQL opcode");
   else if (rc==2) libzpaq::error("Out of memory");
